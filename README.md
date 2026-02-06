@@ -10,6 +10,92 @@
 
 一个强大的跨平台命令行播客下载工具，支持多个播客平台和 RSS 源。
 
+---
+
+## IMPORTANT DISCLAIMER
+
+```
++========================================================================+
+|                          [!] IMPORTANT NOTICE                          |
++========================================================================+
+|                                                                        |
+|  This tool is provided for EDUCATIONAL and PERSONAL USE ONLY.         |
+|                                                                        |
+|  By using this software, you explicitly agree to:                     |
+|                                                                        |
+|  1. PERSONAL USE ONLY                                                 |
+|     - Use for personal learning, research, and hobby purposes         |
+|     - NOT for commercial distribution or public sharing               |
+|     - NOT for any profit-making activities                            |
+|                                                                        |
+|  2. RESPECT COPYRIGHT LAWS                                            |
+|     - All downloaded content remains property of original creators    |
+|     - Respect intellectual property rights and copyright laws         |
+|     - Support content creators through official channels              |
+|                                                                        |
+|  3. RESPECT BUSINESS ECOSYSTEMS                                       |
+|     - Do not use this tool to circumvent paid subscriptions           |
+|     - Support creators via official platforms and subscriptions       |
+|     - Respect the business model of podcast platforms                 |
+|                                                                        |
+|  4. LEGAL COMPLIANCE                                                  |
+|     - Comply with all applicable laws in your jurisdiction            |
+|     - Comply with Terms of Service of podcast platforms               |
+|     - Users are solely responsible for their usage                    |
+|                                                                        |
+|  PROHIBITED USES:                                                     |
+|    X Commercial redistribution of downloaded content                  |
+|    X Mass downloading for public sharing or distribution              |
+|    X Bypassing paid subscription services                             |
+|    X Any activity that harms content creators or platforms            |
+|                                                                        |
+|  The developers assume NO LIABILITY for misuse of this software.      |
+|                                                                        |
++========================================================================+
+```
+
+```
++========================================================================+
+|                          [!] 重要声明                                  |
++========================================================================+
+|                                                                        |
+|  本工具仅供学习、研究和个人爱好使用。                                      |
+|                                                                        |
+|  使用本软件即表示您明确同意：                                              |
+|                                                                        |
+|  1. 仅限个人使用                                                        |
+|     - 用于个人学习、研究和爱好目的                                        |
+|     - 禁止用于商业分发或公开传播                                          |
+|     - 禁止用于任何盈利活动                                               |
+|                                                                        |
+|  2. 尊重版权法规                                                        |
+|     - 所有下载内容归原创作者所有                                          |
+|     - 尊重知识产权和版权法律                                             |
+|     - 通过官方渠道支持内容创作者                                          |
+|                                                                        |
+|  3. 尊重商业生态                                                        |
+|     - 不得使用本工具绕过付费订阅服务                                       |
+|     - 通过官方平台和订阅支持创作者                                        |
+|     - 尊重播客平台的商业模式                                             |
+|                                                                        |
+|  4. 遵守法律法规                                                        |
+|     - 遵守您所在地区的所有适用法律                                        |
+|     - 遵守播客平台的服务条款                                             |
+|     - 用户对其使用行为承担全部责任                                        |
+|                                                                        |
+|  禁止用途：                                                             |
+|    X 商业性再分发下载的内容                                              |
+|    X 大规模下载用于公开分享或传播                                         |
+|    X 绕过付费订阅服务                                                   |
+|    X 任何损害内容创作者或平台利益的行为                                   |
+|                                                                        |
+|  开发者对本软件的滥用不承担任何责任。                                      |
+|                                                                        |
++========================================================================+
+```
+
+---
+
 ## Features
 
 - **Smart Detection**: Automatically identifies URL type, no need to specify downloader
