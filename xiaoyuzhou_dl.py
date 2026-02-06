@@ -293,9 +293,9 @@ def main(url: str, output: str, concurrent: int, skip_existing: bool, latest: in
     3. Use episode links to download one by one
     """
     try:
-        # 打印横幅和免责声明
-        print_banner()
-        print_disclaimer()
+        # 打印横幅和免责声明（已移至 casts_down.py 统一入口）
+        # print_banner()
+        # print_disclaimer()
         downloader = XiaoyuzhouDownloader(concurrent=concurrent)
         output_dir = Path(output)
 

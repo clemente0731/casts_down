@@ -32,38 +32,16 @@ def detect_downloader(url: str) -> str:
 
 
 def print_banner():
-    """打印 ASCII 横幅"""
-    banner = r"""
-   ____          _         ____
-  / ___|__ _ ___| |_ ___  |  _ \  _____      ___ __
- | |   / _` / __| __/ __| | | | |/ _ \ \ /\ / / '_ \
- | |__| (_| \__ \ |_\__ \ | |_| | (_) \ V  V /| | | |
-  \____\__,_|___/\__|___/ |____/ \___/ \_/\_/ |_| |_|
-
-          Intelligent Podcast Downloader v1.0
-"""
+    """打印简洁横幅"""
+    banner = "\n🎙️  Casts Down - Intelligent Podcast Downloader v1.0\n"
     click.echo(banner)
 
 
 def print_disclaimer():
     """打印免责声明"""
     disclaimer = """
-+================================================================+
-|                      [!] DISCLAIMER                            |
-+================================================================+
-|                                                                |
-| This project is for EDUCATIONAL purposes ONLY.                 |
-| Any destructive or commercial infringement is PROHIBITED.      |
-|                                                                |
-| 该项目仅用于学习端到端项目开发使用                                  |
-| 严禁用于任何破坏或者商业侵害活动                                    |
-|                                                                |
-| By using this tool, you agree to:                              |
-| - Use for personal learning and research only                  |
-| - Comply with laws and platform terms of service               |
-| - Respect content creators' copyrights                         |
-|                                                                |
-+================================================================+
+⚠️  DISCLAIMER: For educational purposes only. Respect copyrights.
+    该项目仅用于学习，请遵守版权法律法规。
 """
     click.echo(disclaimer)
 

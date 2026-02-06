@@ -355,9 +355,9 @@ def main(url: str, all: bool, latest: int, output: str, concurrent: int, skip_ex
     podcast-dl "https://podcasts.apple.com/us/podcast/xxx/id123456789?i=1000123456"
     """
     try:
-        # 打印横幅和免责声明
-        print_banner()
-        print_disclaimer()
+        # 打印横幅和免责声明（已移至 casts_down.py 统一入口）
+        # print_banner()
+        # print_disclaimer()
 
         click.echo(f"[*] Parsing: {url}\n")
 
