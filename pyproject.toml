@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "casts-down"
+version = "0.1.0"
+description = "一个强大的跨平台命令行播客下载工具，支持多个播客平台和 RSS 源"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Casts Down Contributors"}
+]
+keywords = ["podcast", "downloader", "cli", "apple-podcasts", "xiaoyuzhou", "rss"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio",
+    "Environment :: Console",
+]
+
+dependencies = [
+    "aiohttp>=3.8.0",
+    "beautifulsoup4>=4.11.0",
+    "click>=8.1.0",
+    "feedparser>=6.0.10",
+    "requests>=2.28.0",
+    "tqdm>=4.65.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/clemente0731/casts_down"
+Repository = "https://github.com/clemente0731/casts_down"
+Issues = "https://github.com/clemente0731/casts_down/issues"
+
+[project.scripts]
+casts-down = "casts_down:main"
+podcast-dl = "podcast_dl:main"
+xiaoyuzhou-dl = "xiaoyuzhou_dl:main"
+
+[tool.setuptools]
+py-modules = ["casts_down", "podcast_dl", "xiaoyuzhou_dl"]

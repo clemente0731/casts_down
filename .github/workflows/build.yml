@@ -1,4 +1,4 @@
-name: Build Release
+name: Publish to PyPI
 
 on:
   push:
@@ -8,30 +8,8 @@ on:
 
 jobs:
   build:
-    name: Build on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          # Windows
-          - os: windows-latest
-            platform: windows
-            arch: x64
-
-          # macOS Intel
-          - os: macos-13
-            platform: macos
-            arch: x64
-
-          # macOS Apple Silicon
-          - os: macos-latest
-            platform: macos
-            arch: arm64
-
-          # Linux
-          - os: ubuntu-latest
-            platform: linux
-            arch: x64
+    name: Build Python Package
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
@@ -42,38 +20,71 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - name: Install build tools
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
+          pip install build twine
 
-      - name: Build executable
-        run: python build.py
+      - name: Build package
+        run: python -m build
 
-      - name: Upload artifact
+      - name: Check package
+        run: twine check dist/*
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: casts-down-${{ matrix.platform }}-${{ matrix.arch }}
-          path: release/*
+          name: python-package-distributions
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      id-token: write  # IMPORTANT: for trusted publishing
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
 
   release:
-    name: Create Release
+    name: Create GitHub Release
     needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
 
     steps:
-      - name: Download all artifacts
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          name: python-package-distributions
+          path: dist/
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          files: artifacts/**/*
+          files: dist/*
           draft: false
           prerelease: false
+          body: |
+            ## 安装方式
+
+            ```bash
+            pip install casts-down
+            ```
+
+            ## 使用方式
+
+            ```bash
+            casts-down <URL>
+            ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
