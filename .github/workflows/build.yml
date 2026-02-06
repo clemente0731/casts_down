@@ -60,6 +60,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write  # IMPORTANT: for creating releases
 
     steps:
       - name: Download artifacts
@@ -78,7 +80,7 @@ jobs:
             ## 安装方式
 
             ```bash
-            pip install casts-down
+            pip install casts_down
             ```
 
             ## 使用方式
