@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "casts-down"
-version = "0.1.0"
+version = "0.2.0"
 description = "一个强大的跨平台命令行播客下载工具，支持多个播客平台和 RSS 源"
 readme = "README.md"
 requires-python = ">=3.8"
