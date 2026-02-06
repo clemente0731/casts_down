@@ -33,9 +33,23 @@ class XiaoyuzhouDownloader:
             re.DOTALL
         )
         if not match:
-            raise ValueError("无法找到 __NEXT_DATA__ 数据")
+            raise ValueError("无法找到 __NEXT_DATA__ 脚本标签，页面结构可能已更改")
 
-        data = json.loads(match.group(1))
+        try:
+            data = json.loads(match.group(1))
+        except json.JSONDecodeError as e:
+            raise ValueError(f"JSON 解析失败，页面数据格式异常: {str(e)}")
+
+        # 逐层检查，给出明确错误信息
+        if not isinstance(data, dict):
+            raise ValueError(f"页面数据格式异常，预期为字典但得到 {type(data).__name__}")
+
+        if 'props' not in data:
+            raise ValueError("页面数据缺少 'props' 字段")
+
+        if 'pageProps' not in data['props']:
+            raise ValueError("页面数据缺少 'pageProps' 字段")
+
         return data['props']['pageProps']
 
     async def get_episode_info(self, session: aiohttp.ClientSession, episode_url: str) -> dict:
@@ -104,8 +118,9 @@ class XiaoyuzhouDownloader:
         output_path: Path,
         skip_existing: bool = False
     ) -> tuple[bool, str]:
-        """下载单个音频文件"""
+        """下载单个音频文件（带资源清理和详细错误处理）"""
         async with self.semaphore:
+            temp_path = None
             try:
                 if output_path.exists() and skip_existing:
                     return True, f"Skipped: {output_path.name}"
@@ -119,13 +134,31 @@ class XiaoyuzhouDownloader:
                         async for chunk in response.content.iter_chunked(8192):
                             f.write(chunk)
 
+                    # 安全重命名
+                    if output_path.exists():
+                        output_path.unlink()
                     temp_path.rename(output_path)
+                    temp_path = None  # 标记已成功重命名
 
                     size_mb = output_path.stat().st_size / 1024 / 1024
                     return True, f"Completed: {output_path.name} ({size_mb:.1f} MB)"
 
+            except asyncio.TimeoutError:
+                return False, f"Timeout: {output_path.name}"
+            except aiohttp.ClientError as e:
+                error_type = type(e).__name__
+                return False, f"Network error({error_type}): {output_path.name}"
+            except (OSError, IOError) as e:
+                return False, f"File error: {output_path.name} - {str(e)}"
             except Exception as e:
-                return False, f"Failed: {output_path.name} - {str(e)}"
+                return False, f"Unknown error: {output_path.name} - {type(e).__name__}"
+            finally:
+                # 确保清理临时文件
+                if temp_path and temp_path.exists():
+                    try:
+                        temp_path.unlink()
+                    except Exception:
+                        pass
 
     async def download_episode_by_url(self, episode_url: str, output_dir: Path, skip_existing: bool = False):
         """下载单个剧集（通过 URL）"""

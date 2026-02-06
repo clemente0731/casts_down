@@ -271,10 +271,11 @@ class PodcastDownloader:
         skip_existing: bool = False
     ) -> tuple[bool, str]:
         """
-        下载单个剧集
+        下载单个剧集（带资源清理和详细错误处理）
         返回: (是否成功, 消息)
         """
         async with self.semaphore:
+            temp_path = None
             try:
                 if output_path.exists() and skip_existing:
                     return True, f"跳过: {output_path.name}"
@@ -293,8 +294,11 @@ class PodcastDownloader:
                             f.write(chunk)
                             downloaded += len(chunk)
 
-                    # 下载完成后重命名
+                    # 下载完成后安全重命名
+                    if output_path.exists():
+                        output_path.unlink()  # 删除已存在的文件
                     temp_path.rename(output_path)
+                    temp_path = None  # 标记已成功重命名
 
                     size_mb = output_path.stat().st_size / 1024 / 1024
                     return True, f"完成: {output_path.name} ({size_mb:.1f} MB)"
@@ -302,9 +306,20 @@ class PodcastDownloader:
             except asyncio.TimeoutError:
                 return False, f"超时: {episode.title}"
             except aiohttp.ClientError as e:
-                return False, f"下载失败: {episode.title} - {str(e)}"
+                error_type = type(e).__name__
+                return False, f"网络错误({error_type}): {episode.title}"
+            except (OSError, IOError) as e:
+                return False, f"文件操作失败: {episode.title} - {str(e)}"
             except Exception as e:
-                return False, f"错误: {episode.title} - {str(e)}"
+                # 记录未预期的错误但不崩溃
+                return False, f"未知错误: {episode.title} - {type(e).__name__}"
+            finally:
+                # 确保清理临时文件
+                if temp_path and temp_path.exists():
+                    try:
+                        temp_path.unlink()
+                    except Exception:
+                        pass  # 忽略清理失败
 
     async def download_all(
         self,
