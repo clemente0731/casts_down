@@ -43,8 +43,6 @@ Issues = "https://github.com/clemente0731/casts_down/issues"
 
 [project.scripts]
 casts-down = "casts_down:main"
-podcast-dl = "podcast_dl:main"
-xiaoyuzhou-dl = "xiaoyuzhou_dl:main"
 
 [tool.setuptools]
 py-modules = ["casts_down", "podcast_dl", "xiaoyuzhou_dl"]
