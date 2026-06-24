@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -111,10 +112,10 @@ def render_task_progress(rows: list[PipelineTaskView], tty: bool) -> str:
         lines.append(
             f"{status_label} "
             f"{row.index:02d}  "
-            f"{_fit(row.file_name, 20):<20} "
-            f"{_fit(row.download_status, 17):<17} "
-            f"{_fit(row.transcribe_status, 17):<17} "
-            f"{_fit(row.size_label, 8):<8} "
+            f"{_fit(row.file_name, 20)} "
+            f"{_fit(row.download_status, 17)} "
+            f"{_fit(row.transcribe_status, 17)} "
+            f"{_fit(row.size_label, 8)} "
             f"{row.error or '-'}"
         )
     return "\n".join(lines)
@@ -142,8 +143,33 @@ def _format_bytes(value: int) -> str:
 
 
 def _fit(value: str, width: int) -> str:
-    if len(value) <= width:
-        return value
+    display_width = _display_width(value)
+    if display_width <= width:
+        return value + " " * (width - display_width)
     if width <= 1:
-        return value[:width]
-    return value[: width - 1] + "~"
+        return "~"[:width]
+
+    marker_width = 1
+    target_width = width - marker_width
+    output = []
+    used_width = 0
+    for char in value:
+        char_width = _char_width(char)
+        if used_width + char_width > target_width:
+            break
+        output.append(char)
+        used_width += char_width
+
+    return "".join(output) + " " * (target_width - used_width) + "~"
+
+
+def _display_width(value: str) -> int:
+    return sum(_char_width(char) for char in value)
+
+
+def _char_width(char: str) -> int:
+    if unicodedata.combining(char):
+        return 0
+    if unicodedata.east_asian_width(char) in {"F", "W"}:
+        return 2
+    return 1

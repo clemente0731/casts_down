@@ -101,3 +101,46 @@ def test_render_task_progress_includes_green_yellow_red_rows():
     assert "episode-c.mp3" in text
     assert "HTTP 403" in text
     assert "\x1b[" not in text
+
+
+def test_render_task_progress_aligns_wide_filenames():
+    rows = [
+        PipelineTaskView(
+            1,
+            "ascii-podcast-episode-long-title.mp3",
+            "done",
+            "queued",
+            "running",
+            "75 MB",
+        ),
+        PipelineTaskView(
+            2,
+            "科技播客-episode-long-title.mp3",
+            "done",
+            "queued",
+            "running",
+            "75 MB",
+        ),
+    ]
+
+    text = render_task_progress(rows, tty=False)
+    ascii_row, cjk_row = text.splitlines()[2:4]
+
+    assert _display_width(ascii_row[: ascii_row.index("done")]) == _display_width(
+        cjk_row[: cjk_row.index("done")]
+    )
+    assert "\x1b[" not in text
+
+
+def _display_width(value):
+    import unicodedata
+
+    total = 0
+    for char in value:
+        if unicodedata.combining(char):
+            continue
+        if unicodedata.east_asian_width(char) in {"F", "W"}:
+            total += 2
+        else:
+            total += 1
+    return total
