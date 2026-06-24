@@ -52,6 +52,72 @@ def _has_transcript(audio_path: Path) -> bool:
     return audio_path.with_suffix(".srt").exists() and audio_path.with_suffix(".txt").exists()
 
 
+def _output_paths(audio_path: Path) -> list[Path]:
+    return [
+        audio_path.with_suffix(".srt").resolve(),
+        audio_path.with_suffix(".txt").resolve(),
+        word_stats_path(audio_path).resolve(),
+    ]
+
+
+def transcribe_one(
+    audio_path: Path,
+    engine: TranscribeEngine,
+    language: str | None = None,
+    skip_transcribed: bool = True,
+    overwrite: bool = False,
+) -> dict:
+    start_time = time.monotonic()
+    try:
+        if not overwrite and skip_transcribed and _has_transcript(audio_path):
+            if word_stats_is_current(audio_path):
+                return {
+                    "file": audio_path,
+                    "success": True,
+                    "skipped": True,
+                    "status": "skipped",
+                    "outputs": _output_paths(audio_path),
+                    "duration": 0,
+                    "error": None,
+                }
+            words_path = write_word_stats_from_txt(audio_path).resolve()
+            return {
+                "file": audio_path,
+                "success": True,
+                "skipped": True,
+                "status": "backfilled",
+                "outputs": [words_path],
+                "duration": 0,
+                "error": None,
+            }
+
+        segments = engine.transcribe(audio_path, language=language)
+        outputs = [path.resolve() for path in write_outputs(audio_path, segments)]
+        elapsed = time.monotonic() - start_time
+        return {
+            "file": audio_path,
+            "success": True,
+            "skipped": False,
+            "status": "succeeded",
+            "outputs": outputs,
+            "duration": elapsed,
+            "error": None,
+        }
+    except KeyboardInterrupt:
+        raise
+    except Exception as e:
+        elapsed = time.monotonic() - start_time
+        return {
+            "file": audio_path,
+            "success": False,
+            "skipped": False,
+            "status": "failed",
+            "outputs": [],
+            "duration": elapsed,
+            "error": f"{type(e).__name__}: {e}",
+        }
+
+
 def transcribe_batch(
     files: list[Path],
     engine: TranscribeEngine | None = None,
@@ -78,35 +144,24 @@ def transcribe_batch(
         )
 
     for audio_path in files:
-        if not overwrite and skip_transcribed and _has_transcript(audio_path):
-            start_time = time.monotonic()
-            try:
-                if not word_stats_is_current(audio_path):
-                    write_word_stats_from_txt(audio_path)
-                    click.echo(f"[*] Backfilled .words.json for {audio_path.name}")
-                results.append({"file": audio_path, "success": True, "skipped": True, "duration": 0, "error": None})
-                click.echo(f"[~] Skipped (already transcribed): {audio_path.name}")
-            except Exception as e:
-                elapsed = time.monotonic() - start_time
-                results.append({"file": audio_path, "success": False, "skipped": False, "duration": elapsed, "error": f"{type(e).__name__}: {e}"})
-                click.echo(f"[-] {audio_path.name} -> FAILED: {type(e).__name__}")
-            _print_progress()
-            continue
-        start_time = time.monotonic()
         try:
-            segments = engine.transcribe(audio_path, language=language)
-            click.echo(f"[*] Writing .srt + .txt + .words.json for {audio_path.name} ...")
-            write_outputs(audio_path, segments)
-            elapsed = time.monotonic() - start_time
-            srt_path = audio_path.with_suffix(".srt").resolve()
-            txt_path = audio_path.with_suffix(".txt").resolve()
-            words_path = word_stats_path(audio_path).resolve()
-            results.append({"file": audio_path, "success": True, "skipped": False, "duration": elapsed, "error": None})
-            click.echo(f"[+] {audio_path.name} -> .srt + .txt + .words.json ({elapsed:.0f}s)")
-            click.echo(f"    {srt_path}")
-            click.echo(f"    {txt_path}")
-            click.echo(f"    {words_path}")
-            _print_progress()
+            if not overwrite and skip_transcribed and _has_transcript(audio_path):
+                result = transcribe_one(
+                    audio_path,
+                    engine=engine,
+                    language=language,
+                    skip_transcribed=skip_transcribed,
+                    overwrite=overwrite,
+                )
+            else:
+                click.echo(f"[*] Writing .srt + .txt + .words.json for {audio_path.name} ...")
+                result = transcribe_one(
+                    audio_path,
+                    engine=engine,
+                    language=language,
+                    skip_transcribed=skip_transcribed,
+                    overwrite=overwrite,
+                )
         except KeyboardInterrupt:
             for suffix in (".srt.tmp", ".txt.tmp", ".words.json.tmp"):
                 tmp = audio_path.with_suffix(suffix)
@@ -114,11 +169,19 @@ def transcribe_batch(
                     tmp.unlink()
             click.echo(f"\n[!] Interrupted during: {audio_path.name}")
             break
-        except Exception as e:
-            elapsed = time.monotonic() - start_time
-            results.append({"file": audio_path, "success": False, "skipped": False, "duration": elapsed, "error": f"{type(e).__name__}: {e}"})
-            click.echo(f"[-] {audio_path.name} -> FAILED: {type(e).__name__}")
-            _print_progress()
+        results.append(result)
+        if result["status"] == "backfilled":
+            click.echo(f"[*] Backfilled .words.json for {audio_path.name}")
+        if result["skipped"]:
+            click.echo(f"[~] Skipped (already transcribed): {audio_path.name}")
+        elif result["success"]:
+            click.echo(f"[+] {audio_path.name} -> .srt + .txt + .words.json ({result['duration']:.0f}s)")
+            for output in result["outputs"]:
+                click.echo(f"    {output}")
+        else:
+            error_type = result["error"].split(":", 1)[0] if result["error"] else "Error"
+            click.echo(f"[-] {audio_path.name} -> FAILED: {error_type}")
+        _print_progress()
     return results
 
 
