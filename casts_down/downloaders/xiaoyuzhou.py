@@ -225,7 +225,7 @@ class XiaoyuzhouDownloader:
                 click.echo(f"[+] {message}")
                 downloaded_files.append(output_path)
                 if on_file_done:
-                    on_file_done(output_path, episode_info, "")
+                    on_file_done(output_path, episode_info, message)
             else:
                 click.echo(f"[-] {message}", err=True)
                 raise RuntimeError(message)
@@ -315,7 +315,7 @@ class XiaoyuzhouDownloader:
                             output_path = path_map[idx]
                             downloaded_files.append(output_path)
                             if on_file_done:
-                                on_file_done(output_path, episodes[idx], podcast_name)
+                                on_file_done(output_path, episodes[idx], message)
                         else:
                             tqdm.write(f"[-] {message}")
             finally:

@@ -432,8 +432,8 @@ class TestDownloadAll:
             path.write_bytes(b"data")
             return True, f"Done: {path.name}"
 
-        def on_file_done(path, ep, podcast_name):
-            callback_events.append((path, ep, podcast_name, path.exists(), path.read_bytes()))
+        def on_file_done(path, ep, message):
+            callback_events.append((path, ep, message, path.exists(), path.read_bytes()))
 
         dl.download_episode = fake_download
 
@@ -449,7 +449,7 @@ class TestDownloadAll:
 
         assert files == [tmp_path / "podcast--done.mp3"]
         assert callback_events == [
-            (tmp_path / "podcast--done.mp3", episode, "Podcast", True, b"data")
+            (tmp_path / "podcast--done.mp3", episode, "Done: podcast--done.mp3", True, b"data")
         ]
 
     @pytest.mark.asyncio
@@ -768,8 +768,8 @@ class TestDryRunXiaoyuzhouParser:
             output_path.write_bytes(b"data")
             return True, f"Completed: {output_path.name}"
 
-        def on_file_done(path, ep, podcast_name):
-            callback_events.append((path, ep, podcast_name, path.exists(), path.read_bytes()))
+        def on_file_done(path, ep, message):
+            callback_events.append((path, ep, message, path.exists(), path.read_bytes()))
 
         dl.get_podcast_episodes = fake_get_podcast_episodes
         dl.download_audio = fake_download_audio
@@ -782,7 +782,52 @@ class TestDryRunXiaoyuzhouParser:
 
         assert files == [tmp_path / "my-podcast--ep-one.m4a"]
         assert callback_events == [
-            (tmp_path / "my-podcast--ep-one.m4a", episode, "My Podcast", True, b"data")
+            (
+                tmp_path / "my-podcast--ep-one.m4a",
+                episode,
+                "Completed: my-podcast--ep-one.m4a",
+                True,
+                b"data",
+            )
+        ]
+
+    @pytest.mark.asyncio
+    async def test_episode_download_callback_receives_success_message(self, tmp_path):
+        from casts_down.downloaders.xiaoyuzhou import XiaoyuzhouDownloader
+
+        dl = XiaoyuzhouDownloader()
+        episode_info = {
+            "eid": "abc",
+            "title": "Ep One",
+            "audio_url": "https://example.com/audio.m4a",
+            "duration": 123,
+            "description": "",
+            "pubDate": "",
+        }
+        callback_events = []
+
+        async def fake_get_episode_info(session, episode_url):
+            return episode_info
+
+        async def fake_download_audio(session, audio_url, output_path, skip_existing, progress_callback=None):
+            output_path.write_bytes(b"data")
+            return True, f"Completed: {output_path.name}"
+
+        def on_file_done(path, ep, message):
+            callback_events.append((path, ep, message, path.exists(), path.read_bytes()))
+
+        dl.get_episode_info = fake_get_episode_info
+        dl.download_audio = fake_download_audio
+
+        files = await dl.download_episode_by_url(
+            "https://www.xiaoyuzhoufm.com/episode/abc",
+            tmp_path,
+            on_file_done=on_file_done,
+        )
+
+        assert files == [tmp_path / "ep-one.m4a"]
+        assert callback_events == [
+            (tmp_path / "ep-one.m4a", episode_info, "Completed: ep-one.m4a", True, b"data")
         ]
 
 
