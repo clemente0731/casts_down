@@ -139,6 +139,84 @@ class TestTaskTiming:
         assert "Total:" in result.output
 
 
+class TestMultipleDownloadURLs:
+    @patch("casts_down.cli._download_podcast")
+    def test_multiple_urls_download_with_shared_options(self, mock_dl, runner):
+        mock_dl.return_value = []
+
+        result = runner.invoke(main, [
+            "https://example.com/feed-a.rss",
+            "https://example.com/feed-b.rss",
+            "--latest", "50",
+            "--no-transcribe",
+        ])
+
+        assert result.exit_code == 0
+        assert mock_dl.call_count == 2
+        assert [call.kwargs["url"] for call in mock_dl.call_args_list] == [
+            "https://example.com/feed-a.rss",
+            "https://example.com/feed-b.rss",
+        ]
+        assert all(call.kwargs["latest"] == 50 for call in mock_dl.call_args_list)
+
+    @patch("casts_down.cli._download_podcast")
+    def test_options_can_be_between_multiple_urls(self, mock_dl, runner):
+        mock_dl.return_value = []
+
+        result = runner.invoke(main, [
+            "https://example.com/feed-a.rss",
+            "--latest", "2",
+            "https://example.com/feed-b.rss",
+            "--no-transcribe",
+        ])
+
+        assert result.exit_code == 0
+        assert mock_dl.call_count == 2
+        assert all(call.kwargs["latest"] == 2 for call in mock_dl.call_args_list)
+
+    @patch("casts_down.cli._run_transcription")
+    @patch("casts_down.cli._download_podcast")
+    def test_multiple_urls_transcribe_once_after_all_downloads(self, mock_dl, mock_tr, runner, tmp_path):
+        audio_a = tmp_path / "a.mp3"
+        audio_b = tmp_path / "b.mp3"
+        audio_a.touch()
+        audio_b.touch()
+        mock_dl.side_effect = [[audio_a], [audio_b]]
+
+        result = runner.invoke(main, [
+            "https://example.com/feed-a.rss",
+            "https://example.com/feed-b.rss",
+            "--model", "medium",
+        ])
+
+        assert result.exit_code == 0
+        mock_tr.assert_called_once_with([audio_a, audio_b], "medium")
+
+    @patch("casts_down.cli._run_transcription")
+    @patch("casts_down.cli._download_podcast")
+    def test_multiple_urls_continue_after_one_failure_and_exit_nonzero(self, mock_dl, mock_tr, runner, tmp_path):
+        audio = tmp_path / "ok.mp3"
+        audio.touch()
+
+        async def fake_download(**kwargs):
+            if "bad" in kwargs["url"]:
+                raise RuntimeError("feed failed")
+            return [audio]
+
+        mock_dl.side_effect = fake_download
+
+        result = runner.invoke(main, [
+            "https://example.com/bad.rss",
+            "https://example.com/good.rss",
+        ])
+
+        assert result.exit_code == 1
+        assert mock_dl.call_count == 2
+        mock_tr.assert_called_once_with([audio], "small")
+        assert "Download Failures" in result.output
+        assert "feed failed" in result.output
+
+
 class TestOptionValidation:
     @patch("casts_down.cli._download_podcast")
     def test_all_and_latest_are_mutually_exclusive(self, mock_dl, runner):

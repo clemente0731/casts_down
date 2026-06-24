@@ -299,12 +299,12 @@ def _run_transcription(files: list[Path], model: str, language: str | None = Non
 # ---------------------------------------------------------------------------
 
 class _CastsDownGroup(click.Group):
-    """Custom group that allows an optional URL argument alongside subcommands.
+    """Custom group that allows optional URL arguments alongside subcommands.
 
-    Click normally consumes the first positional token as the URL argument,
+    Click normally consumes the first positional token as a URL argument,
     even when it matches a subcommand name.  This override peeks at the
     first non-option token and, if it is a registered subcommand, removes
-    the URL argument from the params so Click can route to the subcommand.
+    the URL arguments from the params so Click can route to the subcommand.
     """
 
     def parse_args(self, ctx, args):
@@ -313,41 +313,38 @@ class _CastsDownGroup(click.Group):
         # Check if first non-option arg looks like a subcommand
         first_non_option = _first_non_option_index(args)
         if first_non_option is not None and args[first_non_option] in self.commands:
-            # Temporarily remove the 'url' argument so Click routes to subcommand
+            # Temporarily remove the 'urls' argument so Click routes to subcommand
             saved_params = self.params
-            self.params = [p for p in self.params if p.name != 'url']
+            self.params = [p for p in self.params if p.name != 'urls']
             try:
                 result = super().parse_args(ctx, args)
-                # Ensure 'url' has a default value in ctx.params so the group
-                # callback can be called without a TypeError on the 'url' arg.
-                ctx.params.setdefault('url', None)
+                # Ensure 'urls' has a default value in ctx.params so the group
+                # callback can be called without a TypeError on the 'urls' arg.
+                ctx.params.setdefault('urls', ())
                 return result
             finally:
                 self.params = saved_params
         return super().parse_args(ctx, args)
 
     def _normalize_download_args(self, args: list[str]) -> list[str]:
-        """Allow download options both before and after the URL."""
+        """Allow download options before, after, or between URL arguments."""
         first_non_option = _first_non_option_index(args)
         if first_non_option is None or args[first_non_option] in self.commands:
             return args
 
-        before_url = args[:first_non_option]
-        url = args[first_non_option]
-        rest = args[first_non_option + 1:]
-
-        trailing_options: list[str] = []
-        remaining: list[str] = []
+        option_tokens: list[str] = []
+        positional_tokens: list[str] = []
         index = 0
-        while index < len(rest):
-            consumed = _consume_main_option(rest, index)
+        while index < len(args):
+            consumed = _consume_main_option(args, index)
             if consumed is None:
-                remaining = rest[index:]
-                break
+                positional_tokens.append(args[index])
+                index += 1
+                continue
             tokens, index = consumed
-            trailing_options.extend(tokens)
+            option_tokens.extend(tokens)
 
-        return before_url + trailing_options + [url] + remaining
+        return option_tokens + positional_tokens
 
 
 @click.group(
@@ -357,7 +354,7 @@ class _CastsDownGroup(click.Group):
     context_settings=HELP_CONTEXT,
     subcommand_metavar="[COMMAND] [ARGS]...",
 )
-@click.argument('url', required=False, default=None)
+@click.argument('urls', nargs=-1, metavar='[URL]...')
 @click.option('--all', '-a', 'download_all', is_flag=True, help='Download all episodes (cannot be combined with --latest)')
 @click.option('--latest', '-l', type=click.IntRange(min=1), default=1, help='Download latest N episodes (default: 1)')
 @click.option('--output', '-o', type=click.Path(), default='./podcasts', help='Output directory')
@@ -367,11 +364,11 @@ class _CastsDownGroup(click.Group):
 @click.option('--model', '-m', type=str, default='small', help='Whisper model for transcription (default: small; requires transcription)')
 @click.option('--version', is_flag=True, help='Show version')
 @click.pass_context
-def main(ctx, url, download_all, latest, output, concurrent, skip_existing, transcribe, model, version):
+def main(ctx, urls, download_all, latest, output, concurrent, skip_existing, transcribe, model, version):
     """
     Casts Down - Intelligent Podcast Downloader
 
-    Automatically detects the URL type and uses the appropriate downloader.
+    Automatically detects each URL type and uses the appropriate downloader.
 
     \b
     Supported platforms:
@@ -389,6 +386,10 @@ def main(ctx, url, download_all, latest, output, concurrent, skip_existing, tran
       casts-down "https://podcasts.apple.com/podcast/id123" --latest 3
 
     \b
+      # Download latest 3 episodes from multiple feeds
+      casts-down "https://feeds.example.com/a.rss" "https://feeds.example.com/b.rss" --latest 3
+
+    \b
       # Download from Xiaoyuzhou
       casts-down "https://www.xiaoyuzhoufm.com/episode/xxx"
 
@@ -398,6 +399,7 @@ def main(ctx, url, download_all, latest, output, concurrent, skip_existing, tran
 
     \b
     Rules:
+      - Multiple URLs are allowed; options apply to every URL
       - Download options may appear before or after the URL
       - Use either --all or --latest, not both
       - --model is only valid when transcription is enabled
@@ -425,7 +427,9 @@ def main(ctx, url, download_all, latest, output, concurrent, skip_existing, tran
         raise click.UsageError("--model is ignored with --no-transcribe. Remove --model or enable transcription.")
 
     # No URL and no subcommand => show help
-    if url is None:
+    urls = list(urls)
+
+    if not urls:
         explicit_download_options = [
             "download_all", "latest", "output", "concurrent",
             "skip_existing", "transcribe", "model",
@@ -443,52 +447,68 @@ def main(ctx, url, download_all, latest, output, concurrent, skip_existing, tran
 
         check_system_deps()
 
-        # Validate URL scheme
-        parsed_url = urlparse(url)
-        if parsed_url.scheme not in ('http', 'https'):
-            click.echo("[!] Invalid URL: only http:// and https:// URLs are supported", err=True)
-            sys.exit(1)
-
         disclaimer = (
             "DISCLAIMER: For educational purposes only. Respect copyrights.\n"
         )
         click.echo(disclaimer)
 
-        downloader_type = detect_downloader(url)
+        async def _run_downloads():
+            downloaded: list[Path] = []
+            failures: list[tuple[str, str]] = []
 
-        click.echo(f"[*] Detected: ", nl=False)
+            for index, current_url in enumerate(urls, start=1):
+                if len(urls) > 1:
+                    click.echo(f"\n[*] Processing link {index}/{len(urls)}: {current_url}")
 
-        downloaded_files: list[Path] = []
+                try:
+                    parsed_url = urlparse(current_url)
+                    if parsed_url.scheme not in ('http', 'https'):
+                        raise ValueError("only http:// and https:// URLs are supported")
 
-        async def _run_download():
-            if downloader_type == 'xiaoyuzhou':
-                click.echo("Xiaoyuzhou Podcast\n")
-                return await _download_xiaoyuzhou(
-                    url=url,
-                    output=output,
-                    concurrent=concurrent,
-                    skip_existing=skip_existing,
-                    latest=latest if not download_all else None,
-                )
-            else:  # podcast
-                if 'podcasts.apple.com' in url:
-                    click.echo("Apple Podcasts\n")
-                elif url.endswith(('.rss', '.xml')):
-                    click.echo("RSS Feed\n")
-                else:
-                    click.echo("Podcast RSS Feed\n")
+                    downloader_type = detect_downloader(current_url)
 
-                return await _download_podcast(
-                    url=url,
-                    download_all=download_all,
-                    latest=latest,
-                    output=output,
-                    concurrent=concurrent,
-                    skip_existing=skip_existing,
-                )
+                    click.echo(f"[*] Detected: ", nl=False)
+
+                    if downloader_type == 'xiaoyuzhou':
+                        click.echo("Xiaoyuzhou Podcast\n")
+                        files = await _download_xiaoyuzhou(
+                            url=current_url,
+                            output=output,
+                            concurrent=concurrent,
+                            skip_existing=skip_existing,
+                            latest=latest if not download_all else None,
+                        )
+                    else:  # podcast
+                        if 'podcasts.apple.com' in current_url:
+                            click.echo("Apple Podcasts\n")
+                        elif current_url.endswith(('.rss', '.xml')):
+                            click.echo("RSS Feed\n")
+                        else:
+                            click.echo("Podcast RSS Feed\n")
+
+                        files = await _download_podcast(
+                            url=current_url,
+                            download_all=download_all,
+                            latest=latest,
+                            output=output,
+                            concurrent=concurrent,
+                            skip_existing=skip_existing,
+                        )
+                    downloaded.extend(files)
+                except SystemExit as e:
+                    code = e.code if isinstance(e.code, int) else 1
+                    failures.append((current_url, f"exited with status {code}"))
+                    if len(urls) == 1:
+                        raise
+                    click.echo(f"[!] Failed: {current_url} (exit {code})", err=True)
+                except Exception as e:
+                    failures.append((current_url, f"{type(e).__name__}: {e}"))
+                    click.echo(f"[!] Failed: {current_url} - {type(e).__name__}: {e}", err=True)
+
+            return downloaded, failures
 
         download_started = time.monotonic()
-        downloaded_files = asyncio.run(_run_download())
+        downloaded_files, download_failures = asyncio.run(_run_downloads())
         task_timer.record("Download", time.monotonic() - download_started)
 
         # Post-download transcription (auto by default, --no-transcribe to skip)
@@ -500,6 +520,12 @@ def main(ctx, url, download_all, latest, output, concurrent, skip_existing, tran
             click.echo("[!] No files to transcribe (all downloads failed)")
 
         _print_task_timing(task_timer)
+
+        if download_failures:
+            click.echo("\n=== Download Failures ===", err=True)
+            for failed_url, reason in download_failures:
+                click.echo(f"[-] {failed_url} -> {reason}", err=True)
+            sys.exit(1)
 
     except ValueError as e:
         click.echo(f"[!] Error: {str(e)}", err=True)

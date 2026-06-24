@@ -65,13 +65,13 @@ Adds mlx-whisper for Metal GPU acceleration. Falls back to faster-whisper CPU if
 
 ```bash
 # Latest release
-pip install git+https://github.com/host452b/casts_down.git@v2.3.3
+pip install git+https://github.com/host452b/casts_down.git@v2.3.4
 
 # Latest main branch
 pip install git+https://github.com/host452b/casts_down.git
 
 # SSH
-pip install git+ssh://git@github.com/host452b/casts_down.git@v2.3.3
+pip install git+ssh://git@github.com/host452b/casts_down.git@v2.3.4
 ```
 
 ### Install from source
@@ -122,7 +122,7 @@ casts-down transcribe ./podcasts/          # entire directory
 ### Download (+ Auto Transcribe)
 
 ```bash
-casts-down <URL> [OPTIONS]
+casts-down <URL> [URL ...] [OPTIONS]
 ```
 
 With no episode-selection flags, Casts Down downloads the latest episode and transcribes it with the default model. For example, this command:
@@ -139,6 +139,7 @@ casts-down "https://podcasts.apple.com/us/podcast/example-show/id1234567890" --l
 
 Download options can appear before or after the URL. Invalid combinations fail before any network request:
 
+- Multiple URLs are allowed; options apply to every URL in the command.
 - Use either `--all` or `--latest N`, not both.
 - `--model NAME` is only valid when transcription is enabled.
 - Download options require a URL; run `casts-down -h` for help.
@@ -304,6 +305,21 @@ casts-down "https://podcasts.apple.com/us/podcast/example-show/id1234567890" \
   --concurrent 5 \
   --no-transcribe
 ```
+
+### Download latest 50 episodes from multiple podcasts
+
+```bash
+casts-down \
+  "https://podcasts.apple.com/us/podcast/example-a/id1111111111" \
+  "https://podcasts.apple.com/us/podcast/example-b/id2222222222" \
+  --latest 50 \
+  --output ./podcasts \
+  --skip-existing \
+  --concurrent 5 \
+  --no-transcribe
+```
+
+All download options are global in multi-URL mode. If different podcasts need different `--latest`, `--all`, `--output`, or transcription settings, run separate commands.
 
 ### Download all available episodes
 
