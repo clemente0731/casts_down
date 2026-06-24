@@ -11,6 +11,7 @@ import shutil
 import sys
 import time
 from pathlib import Path
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 import aiohttp
@@ -20,7 +21,10 @@ from casts_down import __version__
 from casts_down.downloaders.base import PodcastDownloader
 from casts_down.downloaders.podcast import ApplePodcastsParser, RSSParser
 from casts_down.downloaders.xiaoyuzhou import XiaoyuzhouDownloader
+from casts_down.pipeline import PipelineItem, PipelineResult
+from casts_down.progress import PipelineTaskView, ProgressTotals, render_overall_progress, render_task_progress
 from casts_down.timing import TaskTimer, format_duration
+from casts_down.transcribe import detect_engine, transcribe_one
 
 
 HELP_CONTEXT = {"help_option_names": ["-h", "--help"]}
@@ -141,6 +145,7 @@ async def _download_podcast(
     output: str,
     concurrent: int,
     skip_existing: bool,
+    on_file_done: Callable[[Path, Any, str], None] | None = None,
 ) -> list[Path]:
     """
     Full podcast download logic (RSS / Apple Podcasts).
@@ -216,6 +221,7 @@ async def _download_podcast(
         podcast_name,
         output_dir,
         skip_existing,
+        on_file_done=on_file_done,
     )
 
     return downloaded_files
@@ -227,6 +233,7 @@ async def _download_xiaoyuzhou(
     concurrent: int,
     skip_existing: bool,
     latest: int | None,
+    on_file_done: Callable[[Path, Any, str], None] | None = None,
 ) -> list[Path]:
     """
     Full Xiaoyuzhou download logic.
@@ -241,9 +248,20 @@ async def _download_xiaoyuzhou(
 
     # Determine link type
     if '/episode/' in url:
-        downloaded_files = await downloader.download_episode_by_url(url, output_dir, skip_existing)
+        downloaded_files = await downloader.download_episode_by_url(
+            url,
+            output_dir,
+            skip_existing,
+            on_file_done=on_file_done,
+        )
     elif '/podcast/' in url:
-        downloaded_files = await downloader.download_podcast(url, output_dir, skip_existing, latest)
+        downloaded_files = await downloader.download_podcast(
+            url,
+            output_dir,
+            skip_existing,
+            latest,
+            on_file_done=on_file_done,
+        )
     else:
         click.echo("[!] Unrecognized URL format", err=True)
         click.echo("Supported formats:", err=True)
@@ -255,8 +273,290 @@ async def _download_xiaoyuzhou(
 
 
 # ---------------------------------------------------------------------------
-# Transcription placeholder
+# Pipeline and transcription helpers
 # ---------------------------------------------------------------------------
+
+def _episode_title(episode: Any, fallback: Path) -> str:
+    if isinstance(episode, dict):
+        return str(episode.get("title") or fallback.stem)
+    return str(getattr(episode, "title", fallback.stem))
+
+
+def _item_status(item: PipelineItem) -> str:
+    if item.download_status == "failed" or item.transcribe_status == "failed":
+        return "failed"
+    if item.transcribe_status in {"succeeded", "skipped", "backfilled"}:
+        return item.transcribe_status
+    if item.download_status == "running" or item.transcribe_status == "running":
+        return "running"
+    if item.transcribe_status == "queued":
+        return "queued"
+    return "pending"
+
+
+def _format_size(size: int) -> str:
+    units = ["B", "KB", "MB", "GB", "TB"]
+    amount = float(size)
+    unit = units[0]
+    for unit in units:
+        if amount < 1024 or unit == units[-1]:
+            break
+        amount /= 1024
+    if unit == "B":
+        return f"{int(amount)} {unit}"
+    return f"{amount:.1f} {unit}"
+
+
+def _pipeline_task_views(items: list[PipelineItem]) -> list[PipelineTaskView]:
+    rows = []
+    for item in items:
+        file_name = item.audio_path.name if item.audio_path else item.title
+        size_label = "-"
+        if item.audio_path and item.audio_path.exists():
+            size_label = _format_size(item.audio_path.stat().st_size)
+        rows.append(
+            PipelineTaskView(
+                index=item.index,
+                file_name=file_name,
+                download_status=item.download_status,
+                transcribe_status=item.transcribe_status,
+                status=_item_status(item),
+                size_label=size_label,
+                error=item.error or "-",
+                audio_path=item.audio_path,
+                output_paths=item.outputs,
+            )
+        )
+    return rows
+
+
+def _pipeline_totals(items: list[PipelineItem], elapsed: float, concurrent: int) -> ProgressTotals:
+    total = len(items)
+    failed = sum(1 for item in items if _item_status(item) == "failed")
+    running = sum(1 for item in items if _item_status(item) == "running")
+    queued = sum(1 for item in items if _item_status(item) in {"pending", "queued"})
+    done = total - failed - running - queued
+    known_budget = min(concurrent, max(1, total or concurrent))
+    return ProgressTotals(
+        total=total,
+        done=done,
+        running=running,
+        queued=queued,
+        failed=failed,
+        download_ok=sum(1 for item in items if item.download_status == "succeeded"),
+        download_failed=sum(1 for item in items if item.download_status == "failed"),
+        download_active=sum(1 for item in items if item.download_status == "running"),
+        transcribe_ok=sum(
+            1
+            for item in items
+            if item.transcribe_status in {"succeeded", "skipped", "backfilled"}
+        ),
+        transcribe_failed=sum(1 for item in items if item.transcribe_status == "failed"),
+        transcribe_active=sum(1 for item in items if item.transcribe_status == "running"),
+        transcribe_queued=sum(1 for item in items if item.transcribe_status == "queued"),
+        bytes_done=sum(
+            item.audio_path.stat().st_size
+            for item in items
+            if item.audio_path and item.audio_path.exists()
+        ),
+        bytes_total=0,
+        elapsed=format_duration(elapsed),
+        active_budget=f"{known_budget}/{concurrent}",
+    )
+
+
+def _stdout_is_tty() -> bool:
+    stream = click.get_text_stream("stdout")
+    return bool(getattr(stream, "isatty", lambda: False)())
+
+
+def _print_pipeline_progress(items: list[PipelineItem], started_at: float, concurrent: int) -> None:
+    elapsed = time.monotonic() - started_at
+    click.echo(render_overall_progress(_pipeline_totals(items, elapsed, concurrent), tty=_stdout_is_tty()))
+    click.echo(render_task_progress(_pipeline_task_views(items), tty=_stdout_is_tty()))
+
+
+def _print_pipeline_result(result: PipelineResult, concurrent: int) -> None:
+    click.echo(render_overall_progress(_pipeline_totals(result.items, result.elapsed, concurrent), tty=_stdout_is_tty()))
+    click.echo(render_task_progress(_pipeline_task_views(result.items), tty=_stdout_is_tty()))
+
+
+def run_download_transcribe_pipeline(
+    *,
+    urls: list[str],
+    download_all: bool,
+    latest: int,
+    output: str,
+    concurrent: int,
+    skip_existing: bool,
+    model: str,
+) -> PipelineResult:
+    return asyncio.run(
+        _run_download_transcribe_pipeline_async(
+            urls=urls,
+            download_all=download_all,
+            latest=latest,
+            output=output,
+            concurrent=concurrent,
+            skip_existing=skip_existing,
+            model=model,
+        )
+    )
+
+
+async def _run_download_transcribe_pipeline_async(
+    *,
+    urls: list[str],
+    download_all: bool,
+    latest: int,
+    output: str,
+    concurrent: int,
+    skip_existing: bool,
+    model: str,
+) -> PipelineResult:
+    started_at = time.monotonic()
+    items: list[PipelineItem] = []
+    queue: asyncio.Queue[PipelineItem | None] = asyncio.Queue()
+    engine = None
+    overlap_transcription = concurrent > 1
+    download_concurrent = 1 if concurrent == 1 else max(1, concurrent - 1)
+
+    def enqueue_file(current_url: str, path: Path, episode: Any, message: str) -> None:
+        item = PipelineItem(
+            index=len(items) + 1,
+            source_url=current_url,
+            title=_episode_title(episode, path),
+            audio_path=Path(path),
+            download_status="succeeded",
+            transcribe_status="queued",
+        )
+        items.append(item)
+        queue.put_nowait(item)
+        click.echo(f"[+] {message} -> queued for transcription")
+        _print_pipeline_progress(items, started_at, concurrent)
+
+    async def transcribe_worker() -> None:
+        nonlocal engine
+        while True:
+            item = await queue.get()
+            worker_started = time.monotonic()
+            try:
+                if item is None:
+                    return
+                item.transcribe_status = "running"
+                _print_pipeline_progress(items, started_at, concurrent)
+                if engine is None:
+                    engine = await asyncio.to_thread(detect_engine, model)
+                result = await asyncio.to_thread(
+                    transcribe_one,
+                    item.audio_path,
+                    engine=engine,
+                )
+                item.transcribe_elapsed = float(
+                    result.get("duration") or time.monotonic() - worker_started
+                )
+                item.outputs = list(result.get("outputs") or [])
+                item.transcribe_status = result.get("status") or (
+                    "succeeded" if result.get("success") else "failed"
+                )
+                if item.transcribe_status == "failed" or result.get("success") is False:
+                    item.transcribe_status = "failed"
+                    item.error = result.get("error") or "Transcription failed"
+            except Exception as e:
+                if item is not None:
+                    item.transcribe_elapsed = time.monotonic() - worker_started
+                    item.transcribe_status = "failed"
+                    item.error = f"{type(e).__name__}: {e}"
+            finally:
+                if item is not None:
+                    _print_pipeline_progress(items, started_at, concurrent)
+                queue.task_done()
+
+    worker_task = asyncio.create_task(transcribe_worker()) if overlap_transcription else None
+
+    try:
+        for index, current_url in enumerate(urls, start=1):
+            if len(urls) > 1:
+                click.echo(f"\n[*] Processing link {index}/{len(urls)}: {current_url}")
+
+            try:
+                parsed_url = urlparse(current_url)
+                if parsed_url.scheme not in ('http', 'https'):
+                    raise ValueError("only http:// and https:// URLs are supported")
+
+                downloader_type = detect_downloader(current_url)
+                click.echo(f"[*] Detected: ", nl=False)
+
+                callback = (
+                    lambda path, episode, message, source_url=current_url:
+                    enqueue_file(source_url, path, episode, message)
+                )
+                if downloader_type == 'xiaoyuzhou':
+                    click.echo("Xiaoyuzhou Podcast\n")
+                    await _download_xiaoyuzhou(
+                        url=current_url,
+                        output=output,
+                        concurrent=download_concurrent,
+                        skip_existing=skip_existing,
+                        latest=latest if not download_all else None,
+                        on_file_done=callback,
+                    )
+                else:
+                    if 'podcasts.apple.com' in current_url:
+                        click.echo("Apple Podcasts\n")
+                    elif current_url.endswith(('.rss', '.xml')):
+                        click.echo("RSS Feed\n")
+                    else:
+                        click.echo("Podcast RSS Feed\n")
+
+                    await _download_podcast(
+                        url=current_url,
+                        download_all=download_all,
+                        latest=latest,
+                        output=output,
+                        concurrent=download_concurrent,
+                        skip_existing=skip_existing,
+                        on_file_done=callback,
+                    )
+            except SystemExit as e:
+                code = e.code if isinstance(e.code, int) else 1
+                items.append(
+                    PipelineItem(
+                        len(items) + 1,
+                        current_url,
+                        current_url,
+                        download_status="failed",
+                        transcribe_status="skipped",
+                        error=f"exited with status {code}",
+                    )
+                )
+                _print_pipeline_progress(items, started_at, concurrent)
+                if len(urls) == 1:
+                    break
+                click.echo(f"[!] Failed: {current_url} (exit {code})", err=True)
+            except Exception as e:
+                items.append(
+                    PipelineItem(
+                        len(items) + 1,
+                        current_url,
+                        current_url,
+                        download_status="failed",
+                        transcribe_status="skipped",
+                        error=f"{type(e).__name__}: {e}",
+                    )
+                )
+                _print_pipeline_progress(items, started_at, concurrent)
+                click.echo(f"[!] Failed: {current_url} - {type(e).__name__}: {e}", err=True)
+
+        if worker_task is None:
+            worker_task = asyncio.create_task(transcribe_worker())
+        await queue.join()
+    finally:
+        queue.put_nowait(None)
+        if worker_task is not None:
+            await worker_task
+
+    return PipelineResult(items=items, elapsed=time.monotonic() - started_at)
 
 def _run_transcription(files: list[Path], model: str, language: str | None = None,
                        skip_transcribed: bool = True, overwrite: bool = False) -> None:
@@ -358,7 +658,17 @@ class _CastsDownGroup(click.Group):
 @click.option('--all', '-a', 'download_all', is_flag=True, help='Download all episodes (cannot be combined with --latest)')
 @click.option('--latest', '-l', type=click.IntRange(min=1), default=1, help='Download latest N episodes (default: 1)')
 @click.option('--output', '-o', type=click.Path(), default='./podcasts', help='Output directory')
-@click.option('--concurrent', '-c', type=click.IntRange(min=1, max=20), default=3, help='Concurrent downloads (default: 3)')
+@click.option(
+    '--concurrent',
+    '-c',
+    type=click.IntRange(min=1, max=20),
+    default=3,
+    help=(
+        'Max active pipeline tasks. With transcription enabled, this budget is shared by '
+        'downloads and transcription. With --no-transcribe, it controls parallel downloads. '
+        'Capped by selected episode count. Default: 3.'
+    ),
+)
 @click.option('--skip-existing', '-s', is_flag=True, help='Skip existing files')
 @click.option('--transcribe/--no-transcribe', '-t/', default=True, help='Transcribe after downloading (default: on)')
 @click.option('--model', '-m', type=str, default='small', help='Whisper model for transcription (default: small; requires transcription)')
@@ -507,25 +817,34 @@ def main(ctx, urls, download_all, latest, output, concurrent, skip_existing, tra
 
             return downloaded, failures
 
-        download_started = time.monotonic()
-        downloaded_files, download_failures = asyncio.run(_run_downloads())
-        task_timer.record("Download", time.monotonic() - download_started)
+        if transcribe:
+            pipeline_started = time.monotonic()
+            pipeline_result = run_download_transcribe_pipeline(
+                urls=urls,
+                download_all=download_all,
+                latest=latest,
+                output=output,
+                concurrent=concurrent,
+                skip_existing=skip_existing,
+                model=model,
+            )
+            task_timer.record("Pipeline", time.monotonic() - pipeline_started)
+            _print_pipeline_result(pipeline_result, concurrent)
+            _print_task_timing(task_timer)
+            if pipeline_result.failed_count:
+                sys.exit(1)
+        else:
+            download_started = time.monotonic()
+            downloaded_files, download_failures = asyncio.run(_run_downloads())
+            task_timer.record("Download", time.monotonic() - download_started)
 
-        # Post-download transcription (auto by default, --no-transcribe to skip)
-        if transcribe and downloaded_files:
-            transcription_started = time.monotonic()
-            _run_transcription(downloaded_files, model)
-            task_timer.record("Transcription", time.monotonic() - transcription_started)
-        elif transcribe and not downloaded_files:
-            click.echo("[!] No files to transcribe (all downloads failed)")
+            _print_task_timing(task_timer)
 
-        _print_task_timing(task_timer)
-
-        if download_failures:
-            click.echo("\n=== Download Failures ===", err=True)
-            for failed_url, reason in download_failures:
-                click.echo(f"[-] {failed_url} -> {reason}", err=True)
-            sys.exit(1)
+            if download_failures:
+                click.echo("\n=== Download Failures ===", err=True)
+                for failed_url, reason in download_failures:
+                    click.echo(f"[-] {failed_url} -> {reason}", err=True)
+                sys.exit(1)
 
     except ValueError as e:
         click.echo(f"[!] Error: {str(e)}", err=True)

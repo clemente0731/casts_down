@@ -35,8 +35,8 @@ A cross-platform CLI tool for downloading and transcribing podcasts. Supports Ap
   - Apple Podcasts (single episodes and podcast pages)
   - Xiaoyuzhou / 小宇宙 (single episodes and podcast feeds)
   - Standard RSS 2.0 feeds
-- **Async Concurrent Downloads** - Configurable concurrency for faster batch downloads
-- **Auto Transcription** - Downloads are automatically transcribed to text after completion
+- **Pipeline Concurrency** - `--concurrent` caps active download/transcription work
+- **Auto Transcription** - Downloads are automatically transcribed as files finish
 - **Built-in Speech-to-Text** - Local transcription via faster-whisper (CUDA/CPU), with optional mlx-whisper (Metal) for Mac
 - **Subtitle Output** - Generates SRT (millisecond precision), timestamped TXT, and English word-frequency JSON files
 - **Progress Display** - Episode/byte download progress, transcription ETA, and final task timing summary
@@ -149,7 +149,7 @@ Download options can appear before or after the URL. Invalid combinations fail b
 | `--all` | `-a` | Download all episodes | latest 1 |
 | `--latest N` | `-l N` | Download latest N episodes | 1 |
 | `--output DIR` | `-o DIR` | Output directory | `./podcasts` |
-| `--concurrent N` | `-c N` | Parallel downloads | 3 |
+| `--concurrent N` | `-c N` | Max active pipeline tasks. With transcription enabled, this budget is shared by downloads and transcription. With `--no-transcribe`, it controls parallel downloads. Capped by selected episode count. | 3 |
 | `--skip-existing` | `-s` | Skip already downloaded files | off |
 | `--transcribe/--no-transcribe` | `-t` | Transcribe after download | **on** |
 | `--model NAME` | `-m` | Whisper model for transcription | `small` |
@@ -299,6 +299,14 @@ casts-down "https://feeds.npr.org/510318/podcast.xml" --latest 3
 casts-down "https://podcasts.apple.com/us/podcast/example-show/id1234567890" --all
 ```
 
+Concurrency examples:
+
+```bash
+casts-down "https://feeds.example.com/podcast.rss" --latest 50 --concurrent 3
+casts-down "https://feeds.example.com/podcast.rss" --latest 50 --concurrent 1
+casts-down "https://feeds.example.com/podcast.rss" --latest 50 --no-transcribe --concurrent 5
+```
+
 ### Download latest 50 episodes
 
 ```bash
@@ -306,8 +314,7 @@ casts-down "https://podcasts.apple.com/us/podcast/example-show/id1234567890" \
   --latest 50 \
   --output ./podcasts/example-show \
   --skip-existing \
-  --concurrent 5 \
-  --no-transcribe
+  --concurrent 3
 ```
 
 ### Download latest 50 episodes from multiple podcasts
@@ -319,8 +326,7 @@ casts-down \
   --latest 50 \
   --output ./podcasts \
   --skip-existing \
-  --concurrent 5 \
-  --no-transcribe
+  --concurrent 3
 ```
 
 All download options are global in multi-URL mode. If different podcasts need different `--latest`, `--all`, `--output`, or transcription settings, run separate commands.
@@ -342,8 +348,8 @@ casts-down "https://podcasts.apple.com/us/podcast/example-show/id1234567890" \
   --latest 50 \
   --output ./podcasts/example-show \
   --skip-existing \
-  --model small \
-  --language en
+  --concurrent 3 \
+  --model small
 ```
 
 ### Download from RSS only

@@ -1,8 +1,9 @@
 """Tests for CLI command routing and arguments."""
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from click.testing import CliRunner
 from casts_down.cli import main, check_system_deps
+from casts_down.pipeline import PipelineItem, PipelineResult
 
 @pytest.fixture
 def runner():
@@ -13,6 +14,11 @@ class TestMainGroup:
         result = runner.invoke(main, ["--help"])
         assert result.exit_code == 0
         assert "Casts Down" in result.output
+
+    def test_help_describes_pipeline_concurrency(self, runner):
+        result = runner.invoke(main, ["--help"])
+        assert result.exit_code == 0
+        assert "Max active pipeline tasks" in result.output
 
     def test_short_help(self, runner):
         result = runner.invoke(main, ["-h"])
@@ -51,20 +57,22 @@ class TestMainGroup:
         assert pyproject["project"]["version"] == __version__
 
 class TestTranscribeFlag:
-    @patch("casts_down.cli._run_transcription")
-    @patch("casts_down.cli._download_podcast")
-    def test_transcribe_flag_triggers_transcription(self, mock_dl, mock_tr, runner):
-        fake_path = MagicMock()
-        mock_dl.return_value = [fake_path]
+    @patch("casts_down.cli.run_download_transcribe_pipeline")
+    def test_transcribe_flag_uses_pipeline(self, mock_pipeline, runner):
+        mock_pipeline.return_value = PipelineResult(
+            items=[PipelineItem(1, "https://example.com/feed.rss", "episode", transcribe_status="succeeded")],
+            elapsed=0.01,
+        )
         # Options must precede the URL positional argument in Click's parsing
         result = runner.invoke(main, ["--transcribe", "https://example.com/feed.rss"])
-        mock_tr.assert_called_once()
+        assert result.exit_code == 0
+        mock_pipeline.assert_called_once()
 
     @patch("casts_down.cli._download_podcast")
-    def test_no_transcribe_by_default(self, mock_dl, runner):
+    def test_default_empty_download_has_no_batch_transcription(self, mock_dl, runner):
         mock_dl.return_value = []
         with patch("casts_down.cli._run_transcription") as mock_tr:
-            result = runner.invoke(main, ["https://example.com/feed.rss"])
+            result = runner.invoke(main, ["--no-transcribe", "https://example.com/feed.rss"])
             mock_tr.assert_not_called()
 
 class TestTranscribeSubcommand:
@@ -125,17 +133,23 @@ class TestTaskTiming:
         assert "Download:" in result.output
         assert "Total:" in result.output
 
-    @patch("casts_down.cli._run_transcription")
-    @patch("casts_down.cli._download_podcast")
-    def test_download_and_transcribe_prints_stage_timing(self, mock_dl, mock_tr, runner, tmp_path):
-        audio = tmp_path / "episode.mp3"
-        audio.touch()
-        mock_dl.return_value = [audio]
+    @patch("casts_down.cli.run_download_transcribe_pipeline")
+    def test_download_and_transcribe_prints_pipeline_progress(self, mock_pipeline, runner):
+        item = PipelineItem(
+            1,
+            "https://example.com/feed.rss",
+            "episode",
+            download_status="succeeded",
+            transcribe_status="succeeded",
+        )
+        mock_pipeline.return_value = PipelineResult(items=[item], elapsed=0.01)
+
         result = runner.invoke(main, ["https://example.com/feed.rss"])
         assert result.exit_code == 0
+        assert "=== Overall Progress ===" in result.output
+        assert "=== Task Progress ===" in result.output
         assert "Task Timing" in result.output
-        assert "Download:" in result.output
-        assert "Transcription:" in result.output
+        assert "Pipeline:" in result.output
         assert "Total:" in result.output
 
 
@@ -174,14 +188,15 @@ class TestMultipleDownloadURLs:
         assert mock_dl.call_count == 2
         assert all(call.kwargs["latest"] == 2 for call in mock_dl.call_args_list)
 
-    @patch("casts_down.cli._run_transcription")
-    @patch("casts_down.cli._download_podcast")
-    def test_multiple_urls_transcribe_once_after_all_downloads(self, mock_dl, mock_tr, runner, tmp_path):
-        audio_a = tmp_path / "a.mp3"
-        audio_b = tmp_path / "b.mp3"
-        audio_a.touch()
-        audio_b.touch()
-        mock_dl.side_effect = [[audio_a], [audio_b]]
+    @patch("casts_down.cli.run_download_transcribe_pipeline")
+    def test_multiple_urls_transcribe_through_pipeline(self, mock_pipeline, runner):
+        mock_pipeline.return_value = PipelineResult(
+            items=[
+                PipelineItem(1, "https://example.com/feed-a.rss", "a", transcribe_status="succeeded"),
+                PipelineItem(2, "https://example.com/feed-b.rss", "b", transcribe_status="succeeded"),
+            ],
+            elapsed=0.01,
+        )
 
         result = runner.invoke(main, [
             "https://example.com/feed-a.rss",
@@ -190,11 +205,18 @@ class TestMultipleDownloadURLs:
         ])
 
         assert result.exit_code == 0
-        mock_tr.assert_called_once_with([audio_a, audio_b], "medium")
+        mock_pipeline.assert_called_once()
+        assert mock_pipeline.call_args.kwargs["urls"] == [
+            "https://example.com/feed-a.rss",
+            "https://example.com/feed-b.rss",
+        ]
+        assert mock_pipeline.call_args.kwargs["model"] == "medium"
 
-    @patch("casts_down.cli._run_transcription")
+    @patch("casts_down.cli.run_download_transcribe_pipeline")
     @patch("casts_down.cli._download_podcast")
-    def test_multiple_urls_continue_after_one_failure_and_exit_nonzero(self, mock_dl, mock_tr, runner, tmp_path):
+    def test_no_transcribe_multiple_urls_continue_after_one_failure_and_exit_nonzero(
+        self, mock_dl, mock_pipeline, runner, tmp_path
+    ):
         audio = tmp_path / "ok.mp3"
         audio.touch()
 
@@ -208,13 +230,32 @@ class TestMultipleDownloadURLs:
         result = runner.invoke(main, [
             "https://example.com/bad.rss",
             "https://example.com/good.rss",
+            "--no-transcribe",
         ])
 
         assert result.exit_code == 1
         assert mock_dl.call_count == 2
-        mock_tr.assert_called_once_with([audio], "small")
+        mock_pipeline.assert_not_called()
         assert "Download Failures" in result.output
         assert "feed failed" in result.output
+
+    @patch("casts_down.cli.run_download_transcribe_pipeline")
+    def test_pipeline_failure_exits_nonzero(self, mock_pipeline, runner):
+        item = PipelineItem(
+            1,
+            "https://example.com/feed.rss",
+            "episode",
+            download_status="succeeded",
+            transcribe_status="failed",
+            error="boom",
+        )
+        mock_pipeline.return_value = PipelineResult(items=[item], elapsed=0.01)
+
+        result = runner.invoke(main, ["https://example.com/feed.rss"])
+
+        assert result.exit_code == 1
+        assert "RED" in result.output
+        assert "boom" in result.output
 
 
 class TestOptionValidation:
@@ -254,6 +295,15 @@ class TestOptionValidation:
     def test_latest_negative_rejected(self, runner):
         result = runner.invoke(main, ["-l", "-1", "https://example.com/feed.rss"])
         assert result.exit_code != 0
+
+
+class TestReadmeDocs:
+    def test_readme_documents_pipeline_concurrency(self):
+        text = open("README.md", encoding="utf-8").read()
+
+        assert "Max active pipeline tasks" in text
+        assert "shared by downloads and transcription" in text
+        assert '--latest 50 --concurrent 3' in text
 
 
 class TestCheckSystemDeps:
