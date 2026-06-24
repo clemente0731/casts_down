@@ -103,7 +103,8 @@ class PodcastDownloader:
         episodes: list[PodcastEpisode],
         podcast_name: str,
         output_dir: Path,
-        skip_existing: bool = False
+        skip_existing: bool = False,
+        on_file_done: Callable[[Path, PodcastEpisode, str], None] | None = None,
     ) -> list[Path]:
         """批量下载剧集，返回已下载文件路径列表"""
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -159,7 +160,10 @@ class PodcastDownloader:
                         success, message = result
                         if success:
                             tqdm.write(f"[+] {message}")
-                            downloaded_files.append(path_map[idx])
+                            output_path = path_map[idx]
+                            downloaded_files.append(output_path)
+                            if on_file_done:
+                                on_file_done(output_path, episodes[idx], podcast_name)
                         else:
                             tqdm.write(f"[-] {message}")
             finally:

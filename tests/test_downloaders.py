@@ -419,6 +419,66 @@ class TestDownloadAll:
         assert len(files) == 1
         assert "good" in files[0].name
 
+    @pytest.mark.asyncio
+    async def test_callback_runs_after_successful_file_exists(self, tmp_path):
+        """download_all calls on_file_done only after the final file exists."""
+        from casts_down.downloaders.base import PodcastDownloader, PodcastEpisode
+
+        episode = PodcastEpisode(title="Done", audio_url="https://example.com/done.mp3")
+        dl = PodcastDownloader(concurrent=1)
+        callback_events = []
+
+        async def fake_download(session, ep, path, skip, progress_callback=None):
+            path.write_bytes(b"data")
+            return True, f"Done: {path.name}"
+
+        def on_file_done(path, ep, podcast_name):
+            callback_events.append((path, ep, podcast_name, path.exists(), path.read_bytes()))
+
+        dl.download_episode = fake_download
+
+        with patch("casts_down.downloaders.base.aiohttp.ClientSession") as mock_cs:
+            mock_cs.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+            mock_cs.return_value.__aexit__ = AsyncMock(return_value=False)
+            files = await dl.download_all(
+                [episode],
+                "Podcast",
+                tmp_path,
+                on_file_done=on_file_done,
+            )
+
+        assert files == [tmp_path / "podcast--done.mp3"]
+        assert callback_events == [
+            (tmp_path / "podcast--done.mp3", episode, "Podcast", True, b"data")
+        ]
+
+    @pytest.mark.asyncio
+    async def test_callback_not_called_for_failed_download(self, tmp_path):
+        """download_all does not call on_file_done for failed downloads."""
+        from casts_down.downloaders.base import PodcastDownloader, PodcastEpisode
+
+        episode = PodcastEpisode(title="Fail", audio_url="https://example.com/fail.mp3")
+        dl = PodcastDownloader(concurrent=1)
+        callback_events = []
+
+        async def fake_download(session, ep, path, skip, progress_callback=None):
+            return False, f"Failed: {ep.title}"
+
+        dl.download_episode = fake_download
+
+        with patch("casts_down.downloaders.base.aiohttp.ClientSession") as mock_cs:
+            mock_cs.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+            mock_cs.return_value.__aexit__ = AsyncMock(return_value=False)
+            files = await dl.download_all(
+                [episode],
+                "Podcast",
+                tmp_path,
+                on_file_done=lambda *args: callback_events.append(args),
+            )
+
+        assert files == []
+        assert callback_events == []
+
 
 # ---------------------------------------------------------------------------
 # Dry-run integration tests — exercise real code paths, no large downloads
@@ -688,6 +748,41 @@ class TestDryRunXiaoyuzhouParser:
         assert sorted(path.name for path in files) == [
             "my-podcast--ep-2.m4a",
             "my-podcast--ep.m4a",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_podcast_download_callback_runs_after_successful_file_exists(self, tmp_path):
+        from casts_down.downloaders.xiaoyuzhou import XiaoyuzhouDownloader
+
+        dl = XiaoyuzhouDownloader()
+        episode = {
+            "title": "Ep One",
+            "enclosure": {"url": "https://example.com/audio.m4a"},
+        }
+        callback_events = []
+
+        async def fake_get_podcast_episodes(session, podcast_url):
+            return "My Podcast", [episode]
+
+        async def fake_download_audio(session, audio_url, output_path, skip_existing, progress_callback=None):
+            output_path.write_bytes(b"data")
+            return True, f"Completed: {output_path.name}"
+
+        def on_file_done(path, ep, podcast_name):
+            callback_events.append((path, ep, podcast_name, path.exists(), path.read_bytes()))
+
+        dl.get_podcast_episodes = fake_get_podcast_episodes
+        dl.download_audio = fake_download_audio
+
+        files = await dl.download_podcast(
+            "https://www.xiaoyuzhoufm.com/podcast/abc",
+            tmp_path,
+            on_file_done=on_file_done,
+        )
+
+        assert files == [tmp_path / "my-podcast--ep-one.m4a"]
+        assert callback_events == [
+            (tmp_path / "my-podcast--ep-one.m4a", episode, "My Podcast", True, b"data")
         ]
 
 

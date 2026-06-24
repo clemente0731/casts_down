@@ -171,7 +171,8 @@ class XiaoyuzhouDownloader:
         self,
         episode_url: str,
         output_dir: Path,
-        skip_existing: bool = False
+        skip_existing: bool = False,
+        on_file_done: Callable[[Path, dict, str], None] | None = None,
     ) -> list[Path]:
         """下载单个剧集（通过 URL），返回已下载文件路径列表"""
         downloaded_files: list[Path] = []
@@ -223,6 +224,8 @@ class XiaoyuzhouDownloader:
             if success:
                 click.echo(f"[+] {message}")
                 downloaded_files.append(output_path)
+                if on_file_done:
+                    on_file_done(output_path, episode_info, "")
             else:
                 click.echo(f"[-] {message}", err=True)
                 raise RuntimeError(message)
@@ -234,7 +237,8 @@ class XiaoyuzhouDownloader:
         podcast_url: str,
         output_dir: Path,
         skip_existing: bool = False,
-        latest: int | None = None
+        latest: int | None = None,
+        on_file_done: Callable[[Path, dict, str], None] | None = None,
     ) -> list[Path]:
         """批量下载播客剧集，返回已下载文件路径列表"""
         downloaded_files: list[Path] = []
@@ -308,7 +312,10 @@ class XiaoyuzhouDownloader:
                         success, message = result
                         if success:
                             tqdm.write(f"[+] {message}")
-                            downloaded_files.append(path_map[idx])
+                            output_path = path_map[idx]
+                            downloaded_files.append(output_path)
+                            if on_file_done:
+                                on_file_done(output_path, episodes[idx], podcast_name)
                         else:
                             tqdm.write(f"[-] {message}")
             finally:
