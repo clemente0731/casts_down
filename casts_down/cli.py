@@ -9,6 +9,7 @@ import asyncio
 import platform
 import shutil
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -19,6 +20,64 @@ from casts_down import __version__
 from casts_down.downloaders.base import PodcastDownloader
 from casts_down.downloaders.podcast import ApplePodcastsParser, RSSParser
 from casts_down.downloaders.xiaoyuzhou import XiaoyuzhouDownloader
+from casts_down.timing import TaskTimer, format_duration
+
+
+HELP_CONTEXT = {"help_option_names": ["-h", "--help"]}
+
+_MAIN_VALUE_OPTIONS = {
+    "--latest", "-l",
+    "--output", "-o",
+    "--concurrent", "-c",
+    "--model", "-m",
+}
+_MAIN_FLAG_OPTIONS = {
+    "--all", "-a",
+    "--skip-existing", "-s",
+    "--transcribe", "-t",
+    "--no-transcribe",
+    "--version",
+    "--help", "-h",
+}
+
+
+def _consume_main_option(args: list[str], index: int) -> tuple[list[str], int] | None:
+    """Return the main-command option tokens starting at index, if recognized."""
+    token = args[index]
+    option_name = token.split("=", 1)[0] if token.startswith("--") else token
+
+    if option_name in _MAIN_VALUE_OPTIONS:
+        if "=" in token:
+            return [token], index + 1
+        if index + 1 < len(args):
+            return args[index:index + 2], index + 2
+        return [token], index + 1
+
+    if token in _MAIN_FLAG_OPTIONS:
+        return [token], index + 1
+
+    return None
+
+
+def _first_non_option_index(args: list[str]) -> int | None:
+    index = 0
+    while index < len(args):
+        consumed = _consume_main_option(args, index)
+        if consumed is None:
+            return index
+        _, index = consumed
+    return None
+
+
+def _option_was_provided(ctx: click.Context, name: str) -> bool:
+    return ctx.get_parameter_source(name) == click.core.ParameterSource.COMMANDLINE
+
+
+def _print_task_timing(timer: TaskTimer) -> None:
+    click.echo("\n=== Task Timing ===")
+    for name, elapsed in timer.stages.items():
+        click.echo(f"{name}: {format_duration(elapsed)}")
+    click.echo(f"Total: {format_duration(timer.total_elapsed())}")
 
 
 # ---------------------------------------------------------------------------
@@ -249,8 +308,11 @@ class _CastsDownGroup(click.Group):
     """
 
     def parse_args(self, ctx, args):
-        # Check if first arg looks like a subcommand
-        if args and args[0] in self.commands:
+        args = self._normalize_download_args(list(args))
+
+        # Check if first non-option arg looks like a subcommand
+        first_non_option = _first_non_option_index(args)
+        if first_non_option is not None and args[first_non_option] in self.commands:
             # Temporarily remove the 'url' argument so Click routes to subcommand
             saved_params = self.params
             self.params = [p for p in self.params if p.name != 'url']
@@ -264,16 +326,45 @@ class _CastsDownGroup(click.Group):
                 self.params = saved_params
         return super().parse_args(ctx, args)
 
+    def _normalize_download_args(self, args: list[str]) -> list[str]:
+        """Allow download options both before and after the URL."""
+        first_non_option = _first_non_option_index(args)
+        if first_non_option is None or args[first_non_option] in self.commands:
+            return args
 
-@click.group(cls=_CastsDownGroup, invoke_without_command=True)
+        before_url = args[:first_non_option]
+        url = args[first_non_option]
+        rest = args[first_non_option + 1:]
+
+        trailing_options: list[str] = []
+        remaining: list[str] = []
+        index = 0
+        while index < len(rest):
+            consumed = _consume_main_option(rest, index)
+            if consumed is None:
+                remaining = rest[index:]
+                break
+            tokens, index = consumed
+            trailing_options.extend(tokens)
+
+        return before_url + trailing_options + [url] + remaining
+
+
+@click.group(
+    name="casts-down",
+    cls=_CastsDownGroup,
+    invoke_without_command=True,
+    context_settings=HELP_CONTEXT,
+    subcommand_metavar="[COMMAND] [ARGS]...",
+)
 @click.argument('url', required=False, default=None)
-@click.option('--all', '-a', 'download_all', is_flag=True, help='Download all episodes')
+@click.option('--all', '-a', 'download_all', is_flag=True, help='Download all episodes (cannot be combined with --latest)')
 @click.option('--latest', '-l', type=click.IntRange(min=1), default=1, help='Download latest N episodes (default: 1)')
 @click.option('--output', '-o', type=click.Path(), default='./podcasts', help='Output directory')
 @click.option('--concurrent', '-c', type=click.IntRange(min=1, max=20), default=3, help='Concurrent downloads (default: 3)')
 @click.option('--skip-existing', '-s', is_flag=True, help='Skip existing files')
 @click.option('--transcribe/--no-transcribe', '-t/', default=True, help='Transcribe after downloading (default: on)')
-@click.option('--model', '-m', type=str, default='small', help='Whisper model for transcription (default: small)')
+@click.option('--model', '-m', type=str, default='small', help='Whisper model for transcription (default: small; requires transcription)')
 @click.option('--version', is_flag=True, help='Show version')
 @click.pass_context
 def main(ctx, url, download_all, latest, output, concurrent, skip_existing, transcribe, model, version):
@@ -306,6 +397,12 @@ def main(ctx, url, download_all, latest, output, concurrent, skip_existing, tran
       casts-down "https://feeds.example.com/podcast.rss" --transcribe
 
     \b
+    Rules:
+      - Download options may appear before or after the URL
+      - Use either --all or --latest, not both
+      - --model is only valid when transcription is enabled
+
+    \b
     Subcommands:
       transcribe        Transcribe local audio files
       setup-transcribe  Install transcription dependencies
@@ -318,10 +415,27 @@ def main(ctx, url, download_all, latest, output, concurrent, skip_existing, tran
     if ctx.invoked_subcommand is not None:
         return
 
+    explicit_latest = _option_was_provided(ctx, "latest")
+    explicit_model = _option_was_provided(ctx, "model")
+
+    if download_all and explicit_latest:
+        raise click.UsageError("--all cannot be used with --latest. Choose one episode selection option.")
+
+    if not transcribe and explicit_model:
+        raise click.UsageError("--model is ignored with --no-transcribe. Remove --model or enable transcription.")
+
     # No URL and no subcommand => show help
     if url is None:
+        explicit_download_options = [
+            "download_all", "latest", "output", "concurrent",
+            "skip_existing", "transcribe", "model",
+        ]
+        if any(_option_was_provided(ctx, name) for name in explicit_download_options):
+            raise click.UsageError("Missing URL. Run 'casts-down -h' for usage.")
         click.echo(ctx.get_help())
         return
+
+    task_timer = TaskTimer()
 
     try:
         banner = f"\nCasts Down - Intelligent Podcast Downloader v{__version__}\n"
@@ -373,13 +487,19 @@ def main(ctx, url, download_all, latest, output, concurrent, skip_existing, tran
                     skip_existing=skip_existing,
                 )
 
+        download_started = time.monotonic()
         downloaded_files = asyncio.run(_run_download())
+        task_timer.record("Download", time.monotonic() - download_started)
 
         # Post-download transcription (auto by default, --no-transcribe to skip)
         if transcribe and downloaded_files:
+            transcription_started = time.monotonic()
             _run_transcription(downloaded_files, model)
+            task_timer.record("Transcription", time.monotonic() - transcription_started)
         elif transcribe and not downloaded_files:
             click.echo("[!] No files to transcribe (all downloads failed)")
+
+        _print_task_timing(task_timer)
 
     except ValueError as e:
         click.echo(f"[!] Error: {str(e)}", err=True)
@@ -396,7 +516,7 @@ def main(ctx, url, download_all, latest, output, concurrent, skip_existing, tran
 # Subcommands
 # ---------------------------------------------------------------------------
 
-@main.command()
+@main.command(context_settings=HELP_CONTEXT)
 @click.argument('files', nargs=-1, type=click.Path(exists=True))
 @click.option('--model', '-m', type=str, default='small', help='Whisper model (default: small)')
 @click.option('--language', type=str, default=None, help='Language code (zh, en, etc.)')
@@ -416,12 +536,16 @@ def transcribe(files, model, language, skip_transcribed, overwrite):
         sys.exit(1)
 
     file_paths = [Path(f) for f in files]
+    task_timer = TaskTimer()
+    transcription_started = time.monotonic()
     _run_transcription(file_paths, model, language=language,
                        skip_transcribed=not overwrite and skip_transcribed,
                        overwrite=overwrite)
+    task_timer.record("Transcription", time.monotonic() - transcription_started)
+    _print_task_timing(task_timer)
 
 
-@main.command('setup-transcribe')
+@main.command('setup-transcribe', context_settings=HELP_CONTEXT)
 @click.option('--backend', type=click.Choice(['auto', 'faster-whisper', 'mlx-whisper']),
               default='auto', help='Transcription backend (default: auto-detect)')
 def setup_transcribe(backend):

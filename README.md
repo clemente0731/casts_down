@@ -39,7 +39,7 @@ A cross-platform CLI tool for downloading and transcribing podcasts. Supports Ap
 - **Auto Transcription** - Downloads are automatically transcribed to text after completion
 - **Built-in Speech-to-Text** - Local transcription via faster-whisper (CUDA/CPU), with optional mlx-whisper (Metal) for Mac
 - **Subtitle Output** - Generates SRT (millisecond precision) and timestamped TXT files
-- **Progress Display** - Real-time download and transcription progress tracking
+- **Progress Display** - Episode/byte download progress, transcription ETA, and final task timing summary
 - **Episode Selection** - Download all, latest N, or specific episodes from Apple Podcasts links
 - **Smart File Management** - Auto-naming, skip existing files, resume-safe temp files
 
@@ -51,7 +51,7 @@ A cross-platform CLI tool for downloading and transcribing podcasts. Supports Ap
 pip install casts_down
 ```
 
-Includes all dependencies — download, transcription, and Whisper model auto-download. Ready to use immediately.
+Includes Python dependencies for download and faster-whisper transcription. Transcription also requires `ffmpeg` on `PATH`; the Whisper model downloads on first transcription or during `casts-down setup-transcribe`.
 
 ### macOS Apple Silicon (Metal acceleration)
 
@@ -65,13 +65,13 @@ Adds mlx-whisper for Metal GPU acceleration. Falls back to faster-whisper CPU if
 
 ```bash
 # Latest release
-pip install git+https://github.com/host452b/casts_down.git@v2.2.0
+pip install git+https://github.com/host452b/casts_down.git@v2.3.1
 
 # Latest main branch
 pip install git+https://github.com/host452b/casts_down.git
 
 # SSH
-pip install git+ssh://git@github.com/host452b/casts_down.git@v2.2.0
+pip install git+ssh://git@github.com/host452b/casts_down.git@v2.3.1
 ```
 
 ### Install from source
@@ -125,6 +125,12 @@ casts-down transcribe ./podcasts/          # entire directory
 casts-down <URL> [OPTIONS]
 ```
 
+Download options can appear before or after the URL. Invalid combinations fail before any network request:
+
+- Use either `--all` or `--latest N`, not both.
+- `--model NAME` is only valid when transcription is enabled.
+- Download options require a URL; run `casts-down -h` for help.
+
 | Option | Short | Description | Default |
 |--------|-------|-------------|---------|
 | `--all` | `-a` | Download all episodes | latest 1 |
@@ -154,6 +160,8 @@ Transcribe audio files or directories. Outputs `.srt` (subtitle) and `.txt` (tim
 
 ```bash
 casts-down setup-transcribe
+casts-down setup-transcribe --backend faster-whisper
+casts-down setup-transcribe --backend mlx-whisper
 ```
 
 Pre-downloads the Whisper model so the first transcription has zero wait. Also installs mlx-whisper on Mac Apple Silicon for Metal GPU acceleration.
@@ -164,6 +172,31 @@ Pre-downloads the Whisper model so the first transcription has zero wait. Also i
 | macOS Intel | faster-whisper | CPU |
 | Linux + NVIDIA | faster-whisper | CUDA |
 | Linux (no GPU) | faster-whisper | CPU |
+| Windows + NVIDIA | faster-whisper | CUDA, then CPU fallback |
+| Windows (no GPU) | faster-whisper | CPU |
+
+### How subtitle generation works
+
+Casts Down does not download existing subtitle files. It generates subtitles from the audio:
+
+1. The audio file is passed to a local Whisper engine.
+2. On Apple Silicon, `mlx-whisper` is preferred when installed; otherwise `faster-whisper` is used.
+3. Whisper returns ordered text segments with start and end timestamps in seconds.
+4. Casts Down writes those segments as `.srt` subtitles and a timestamped `.txt` transcript next to the audio file.
+5. If both `.srt` and `.txt` already exist, transcription is skipped unless `--overwrite` is used.
+
+The `.srt` file uses the standard subtitle shape: segment number, `HH:MM:SS,mmm --> HH:MM:SS,mmm`, then text.
+
+For `faster-whisper`, progress is based on decoded segment timestamps. The first few seconds can include CUDA/model warmup, so ETA is treated as warming up until enough audio has been processed.
+
+At the end of a download or transcription command, Casts Down prints a structured timing summary:
+
+```text
+=== Task Timing ===
+Download: 1m23s
+Transcription: 12m04s
+Total: 13m27s
+```
 
 ## Platform Support
 
@@ -261,6 +294,7 @@ casts-down transcribe ./podcasts/ --model medium --language zh
 - Reduce concurrency: `--concurrent 1`
 - Check network connection and proxy settings
 - Some servers may have rate limiting
+- Downloads show both episode progress and byte progress when the server provides `Content-Length`
 
 ### Transcription fails
 
@@ -268,6 +302,7 @@ casts-down transcribe ./podcasts/ --model medium --language zh
 - Check available disk space (models are 75MB - 3GB)
 - For Chinese content, specify language: `--language zh`
 - On Mac Apple Silicon, install Metal support: `pip install "casts_down[metal]"`
+- On Windows + NVIDIA, CUDA DLL paths from pip-installed NVIDIA packages are prepared automatically before CUDA initialization. If CUDA still fails, the tool logs a CUDA device fallback and uses CPU.
 
 ### Abnormal file names
 

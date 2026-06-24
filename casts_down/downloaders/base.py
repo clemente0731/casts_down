@@ -3,6 +3,7 @@
 import asyncio
 import re
 from pathlib import Path
+from typing import Callable
 from urllib.parse import urlparse
 
 import aiohttp
@@ -47,7 +48,8 @@ class PodcastDownloader:
         session: aiohttp.ClientSession,
         episode: PodcastEpisode,
         output_path: Path,
-        skip_existing: bool = False
+        skip_existing: bool = False,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> tuple[bool, str]:
         """
         下载单个剧集（带资源清理和详细错误处理）
@@ -63,6 +65,8 @@ class PodcastDownloader:
                     response.raise_for_status()
 
                     total_size = int(response.headers.get('content-length', 0))
+                    if total_size and progress_callback:
+                        progress_callback(total_size, 0)
 
                     # 创建临时文件
                     temp_path = output_path.with_suffix(output_path.suffix + '.tmp')
@@ -72,6 +76,8 @@ class PodcastDownloader:
                         async for chunk in response.content.iter_chunked(8192):
                             f.write(chunk)
                             downloaded += len(chunk)
+                            if progress_callback:
+                                progress_callback(0, len(chunk))
 
                     # 下载完成后安全重命名
                     if output_path.exists():
@@ -114,34 +120,56 @@ class PodcastDownloader:
         async with aiohttp.ClientSession() as session:
             path_map: dict[int, Path] = {}
 
+            byte_pbar = tqdm(
+                total=0,
+                desc="Download Bytes",
+                unit="B",
+                unit_scale=True,
+                unit_divisor=1024,
+                leave=True,
+            )
+
+            def _report_byte_progress(total_bytes: int, downloaded_bytes: int) -> None:
+                if total_bytes:
+                    byte_pbar.total = (byte_pbar.total or 0) + total_bytes
+                    byte_pbar.refresh()
+                if downloaded_bytes:
+                    byte_pbar.update(downloaded_bytes)
+
             async def _indexed(idx: int, episode: PodcastEpisode, path: Path):
-                result = await self.download_episode(session, episode, path, skip_existing)
+                result = await self.download_episode(
+                    session, episode, path, skip_existing,
+                    progress_callback=_report_byte_progress,
+                )
                 return idx, result
 
-            futs = []
-            for i, episode in enumerate(episodes):
-                filename = episode.sanitize_filename(podcast_name)
-                output_path = output_dir / filename
-                path_map[i] = output_path
-                futs.append(asyncio.ensure_future(
-                    _indexed(i, episode, output_path)
-                ))
+            try:
+                futs = []
+                for i, episode in enumerate(episodes):
+                    filename = episode.sanitize_filename(podcast_name)
+                    output_path = output_dir / filename
+                    path_map[i] = output_path
+                    futs.append(asyncio.ensure_future(
+                        _indexed(i, episode, output_path)
+                    ))
 
-            # 使用 tqdm 显示进度
-            results = []
-            with tqdm(total=len(futs), desc="Download Progress", unit="ep") as pbar:
-                for coro in asyncio.as_completed(futs):
-                    idx, result = await coro
-                    results.append((idx, result))
-                    pbar.update(1)
+                # 使用 tqdm 显示进度和 ETA
+                results = []
+                with tqdm(total=len(futs), desc="Download Episodes", unit="ep") as pbar:
+                    for coro in asyncio.as_completed(futs):
+                        idx, result = await coro
+                        results.append((idx, result))
+                        pbar.update(1)
 
-                    # 实时显示结果
-                    success, message = result
-                    if success:
-                        tqdm.write(f"[+] {message}")
-                        downloaded_files.append(path_map[idx])
-                    else:
-                        tqdm.write(f"[-] {message}")
+                        # 实时显示结果
+                        success, message = result
+                        if success:
+                            tqdm.write(f"[+] {message}")
+                            downloaded_files.append(path_map[idx])
+                        else:
+                            tqdm.write(f"[-] {message}")
+            finally:
+                byte_pbar.close()
 
             # 统计结果
             success_count = sum(1 for _, (s, _) in results if s)

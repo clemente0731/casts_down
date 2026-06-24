@@ -24,6 +24,11 @@ class TestFormatSrt:
         result = format_srt(segments)
         assert "00:01:01,123 --> 00:02:05,456" in result
 
+    def test_srt_millisecond_rounding_carries(self):
+        segments = [Segment(start=1.9996, end=62.9996, text="rounded")]
+        result = format_srt(segments)
+        assert "00:00:02,000 --> 00:01:03,000" in result
+
     def test_srt_hour_overflow(self):
         segments = [Segment(start=3661.0, end=3662.0, text="over an hour")]
         result = format_srt(segments)

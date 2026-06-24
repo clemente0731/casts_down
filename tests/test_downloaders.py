@@ -240,6 +240,51 @@ class TestDownloadAll:
     """Tests for PodcastDownloader.download_all — as_completed index tracking."""
 
     @pytest.mark.asyncio
+    async def test_download_episode_reports_byte_progress(self, tmp_path):
+        """download_episode reports total bytes and chunk progress when content-length is known."""
+        from casts_down.downloaders.base import PodcastDownloader, PodcastEpisode
+
+        class FakeContent:
+            async def iter_chunked(self, chunk_size):
+                yield b"abc"
+                yield b"de"
+
+        class FakeResponse:
+            headers = {"content-length": "5"}
+            content = FakeContent()
+
+            def raise_for_status(self):
+                return None
+
+        class FakeContext:
+            async def __aenter__(self):
+                return FakeResponse()
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeSession:
+            def get(self, *args, **kwargs):
+                return FakeContext()
+
+        events = []
+        dl = PodcastDownloader(concurrent=1)
+        output_path = tmp_path / "episode.mp3"
+        episode = PodcastEpisode("Episode", "https://example.com/episode.mp3")
+
+        success, _ = await dl.download_episode(
+            FakeSession(),
+            episode,
+            output_path,
+            progress_callback=lambda total, chunk: events.append((total, chunk)),
+        )
+
+        assert success is True
+        assert output_path.read_bytes() == b"abcde"
+        assert events[0] == (5, 0)
+        assert sum(chunk for _, chunk in events) == 5
+
+    @pytest.mark.asyncio
     async def test_single_episode_download(self):
         """download_all returns correct file path for a single episode."""
         from casts_down.downloaders.base import PodcastDownloader, PodcastEpisode
@@ -249,7 +294,7 @@ class TestDownloadAll:
         dl = PodcastDownloader(concurrent=1)
 
         # Mock download_episode to return success without network
-        async def fake_download(session, ep, path, skip):
+        async def fake_download(session, ep, path, skip, progress_callback=None):
             path.write_bytes(b"fake audio data")
             return True, f"Done: {path.name}"
 
@@ -278,7 +323,7 @@ class TestDownloadAll:
         ]
         dl = PodcastDownloader(concurrent=3)
 
-        async def fake_download(session, ep, path, skip):
+        async def fake_download(session, ep, path, skip, progress_callback=None):
             path.write_bytes(b"data")
             return True, f"Done: {path.name}"
 
@@ -307,7 +352,7 @@ class TestDownloadAll:
         ]
         dl = PodcastDownloader(concurrent=2)
 
-        async def fake_download(session, ep, path, skip):
+        async def fake_download(session, ep, path, skip, progress_callback=None):
             if "Bad" in ep.title:
                 return False, f"Failed: {ep.title}"
             path.write_bytes(b"data")

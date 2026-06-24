@@ -3,10 +3,10 @@ from pathlib import Path
 from casts_down.transcribe.engine import Segment
 
 def _format_srt_time(seconds: float) -> str:
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    ms = int(round((seconds - int(seconds)) * 1000))
+    total_ms = int(round(seconds * 1000))
+    total_seconds, ms = divmod(total_ms, 1000)
+    h, remainder = divmod(total_seconds, 3600)
+    m, s = divmod(remainder, 60)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 def _format_txt_time(seconds: float) -> str:

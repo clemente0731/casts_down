@@ -5,11 +5,15 @@ import sys
 import click
 
 def detect_platform() -> str:
-    system = platform.system()
-    machine = platform.machine()
-    if system == "Darwin":
-        return "mac_arm64" if machine == "arm64" else "mac_intel"
-    return "linux"
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    if system == "darwin":
+        return "mac_arm64" if machine in {"arm64", "aarch64"} else "mac_intel"
+    if system == "linux":
+        return "linux"
+    if system == "windows":
+        return "windows"
+    return "unknown"
 
 def get_install_packages(plat: str, backend: str = "auto") -> list[str]:
     base = ["faster-whisper>=1.0.0,<2.0.0"]
@@ -45,7 +49,13 @@ def _predownload_model(model: str = "small") -> bool:
 def run_setup(model: str = "small", backend: str = "auto") -> None:
     click.echo("[*] Detecting environment...")
     plat = detect_platform()
-    labels = {"mac_arm64": "macOS arm64 (Apple Silicon)", "mac_intel": "macOS x86_64 (Intel)", "linux": "Linux"}
+    labels = {
+        "mac_arm64": "macOS arm64 (Apple Silicon)",
+        "mac_intel": "macOS x86_64 (Intel)",
+        "linux": "Linux",
+        "windows": "Windows",
+        "unknown": "unknown platform",
+    }
     click.echo(f"[*] Platform: {labels.get(plat, plat)}")
     packages = get_install_packages(plat, backend=backend)
     click.echo(f"[*] Installing: {', '.join(packages)}")

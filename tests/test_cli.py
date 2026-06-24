@@ -14,9 +14,31 @@ class TestMainGroup:
         assert result.exit_code == 0
         assert "Casts Down" in result.output
 
+    def test_short_help(self, runner):
+        result = runner.invoke(main, ["-h"])
+        assert result.exit_code == 0
+        assert "Casts Down" in result.output
+
     def test_no_args_shows_help(self, runner):
         result = runner.invoke(main, [])
         assert result.exit_code == 0
+
+    @patch("casts_down.cli._download_podcast")
+    def test_download_options_can_follow_url(self, mock_dl, runner):
+        mock_dl.return_value = []
+        result = runner.invoke(main, [
+            "https://example.com/feed.rss",
+            "--latest", "3",
+            "--no-transcribe",
+        ])
+        assert result.exit_code == 0
+        mock_dl.assert_called_once()
+        assert mock_dl.call_args.kwargs["latest"] == 3
+
+    def test_download_options_without_url_error(self, runner):
+        result = runner.invoke(main, ["--latest", "2"])
+        assert result.exit_code != 0
+        assert "Missing URL" in result.output
 
     def test_version_matches_pyproject(self):
         try:
@@ -51,6 +73,11 @@ class TestTranscribeSubcommand:
         assert result.exit_code == 0
         assert "--model" in result.output
 
+    def test_transcribe_short_help(self, runner):
+        result = runner.invoke(main, ["transcribe", "-h"])
+        assert result.exit_code == 0
+        assert "--model" in result.output
+
     def test_transcribe_single_file(self, runner, tmp_path):
         audio = tmp_path / "test.mp3"
         audio.touch()
@@ -58,6 +85,9 @@ class TestTranscribeSubcommand:
             result = runner.invoke(main, ["transcribe", str(audio)])
         assert result.exit_code == 0
         mock_run.assert_called_once()
+        assert "Task Timing" in result.output
+        assert "Transcription:" in result.output
+        assert "Total:" in result.output
 
     def test_transcribe_no_files_exits_nonzero(self, runner):
         result = runner.invoke(main, ["transcribe"])
@@ -84,7 +114,53 @@ class TestURLValidation:
             result = runner.invoke(main, ["--no-transcribe", "http://example.com/feed.rss"])
         assert result.exit_code == 0
 
+
+class TestTaskTiming:
+    @patch("casts_down.cli._download_podcast")
+    def test_download_only_prints_timing_summary(self, mock_dl, runner):
+        mock_dl.return_value = []
+        result = runner.invoke(main, ["--no-transcribe", "https://example.com/feed.rss"])
+        assert result.exit_code == 0
+        assert "Task Timing" in result.output
+        assert "Download:" in result.output
+        assert "Total:" in result.output
+
+    @patch("casts_down.cli._run_transcription")
+    @patch("casts_down.cli._download_podcast")
+    def test_download_and_transcribe_prints_stage_timing(self, mock_dl, mock_tr, runner, tmp_path):
+        audio = tmp_path / "episode.mp3"
+        audio.touch()
+        mock_dl.return_value = [audio]
+        result = runner.invoke(main, ["https://example.com/feed.rss"])
+        assert result.exit_code == 0
+        assert "Task Timing" in result.output
+        assert "Download:" in result.output
+        assert "Transcription:" in result.output
+        assert "Total:" in result.output
+
+
 class TestOptionValidation:
+    @patch("casts_down.cli._download_podcast")
+    def test_all_and_latest_are_mutually_exclusive(self, mock_dl, runner):
+        result = runner.invoke(main, [
+            "--all", "--latest", "2",
+            "https://example.com/feed.rss",
+        ])
+        assert result.exit_code != 0
+        assert "cannot be used with" in result.output
+        mock_dl.assert_not_called()
+
+    @patch("casts_down.cli._download_podcast")
+    def test_model_rejected_when_transcription_disabled(self, mock_dl, runner):
+        result = runner.invoke(main, [
+            "--no-transcribe", "--model", "medium",
+            "https://example.com/feed.rss",
+        ])
+        assert result.exit_code != 0
+        assert "--model" in result.output
+        assert "--no-transcribe" in result.output
+        mock_dl.assert_not_called()
+
     def test_concurrent_zero_rejected(self, runner):
         result = runner.invoke(main, ["--concurrent", "0", "https://example.com/feed.rss"])
         assert result.exit_code != 0
@@ -161,10 +237,16 @@ class TestSetupTranscribe:
         result = runner.invoke(main, ["setup-transcribe", "--help"])
         assert result.exit_code == 0
 
-    def test_setup_runs_without_error(self, runner):
-        result = runner.invoke(main, ["setup-transcribe"], input="y\n")
+    def test_setup_short_help(self, runner):
+        result = runner.invoke(main, ["setup-transcribe", "-h"])
         assert result.exit_code == 0
-        assert "Detecting environment" in result.output
+        assert "--backend" in result.output
+
+    def test_setup_runs_without_error(self, runner):
+        with patch("casts_down.transcribe.installer.run_setup") as mock_setup:
+            result = runner.invoke(main, ["setup-transcribe"])
+        assert result.exit_code == 0
+        mock_setup.assert_called_once_with(backend="auto")
 
     def test_backend_option_passed_through(self, runner):
         with patch("casts_down.transcribe.installer.run_setup") as mock_setup:

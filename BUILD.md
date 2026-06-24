@@ -117,8 +117,8 @@ Push a version tag to trigger automatic PyPI publish + GitHub Release:
 ```bash
 # Update version in casts_down/__init__.py and pyproject.toml
 # Then:
-git tag v2.0.1
-git push origin v2.0.1
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 
 GitHub Actions will:
@@ -135,11 +135,11 @@ make test
 
 # 2. Build
 make build          # .pyz executable
-make wheel          # wheel for pip
+make dist           # wheel + sdist for pip
 
 # 3. Tag and push
-git tag v2.0.1
-git push origin v2.0.1
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 
 ## Troubleshooting
@@ -158,8 +158,12 @@ python3 release/casts-down-macos-arm64.pyz --help
 The .pyz only bundles the `casts_down` package, not its dependencies. Install them first:
 
 ```bash
-pip install aiohttp beautifulsoup4 click feedparser tqdm
+pip install aiohttp beautifulsoup4 click feedparser tqdm faster-whisper
+# Optional on macOS Apple Silicon:
+pip install mlx-whisper
 ```
+
+Transcription also requires `ffmpeg` to be available on `PATH`.
 
 Or just install the package normally:
 

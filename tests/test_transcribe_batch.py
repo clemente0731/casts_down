@@ -41,6 +41,17 @@ class TestTranscribeBatch:
         assert (tmp_path / "test.srt").exists()
         assert (tmp_path / "test.txt").exists()
 
+    def test_batch_prints_progress_eta(self, tmp_path, capsys):
+        a = tmp_path / "a.mp3"
+        b = tmp_path / "b.mp3"
+        a.touch()
+        b.touch()
+        from casts_down.transcribe import transcribe_batch
+        transcribe_batch([a, b], engine=DummyEngine())
+        out = capsys.readouterr().out
+        assert "Transcription Progress" in out
+        assert "ETA" in out
+
     def test_failure_does_not_block(self, tmp_path):
         a = tmp_path / "a.mp3"
         b = tmp_path / "b.mp3"

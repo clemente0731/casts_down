@@ -26,6 +26,15 @@ def detect_engine(model: str = "small"):
 AUDIO_EXTENSIONS = {".mp3", ".m4a", ".wav", ".ogg", ".flac", ".wma", ".aac", ".opus"}
 
 
+def _format_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    h, remainder = divmod(seconds, 3600)
+    m, s = divmod(remainder, 60)
+    if h:
+        return f"{h}h{m:02d}m{s:02d}s"
+    return f"{m}m{s:02d}s"
+
+
 def collect_audio_files(directory: Path) -> list[Path]:
     return sorted(f for f in directory.iterdir() if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS)
 
@@ -45,10 +54,25 @@ def transcribe_batch(
     if engine is None:
         engine = detect_engine(model=model)
     results = []
+    batch_start_time = time.monotonic()
+
+    def _print_progress() -> None:
+        completed = len(results)
+        total = len(files)
+        if total == 0 or completed == 0:
+            return
+        elapsed = time.monotonic() - batch_start_time
+        eta = elapsed / completed * (total - completed)
+        click.echo(
+            f"[*] Transcription Progress: {completed}/{total} files | "
+            f"elapsed {_format_duration(elapsed)} | ETA {_format_duration(eta)}"
+        )
+
     for audio_path in files:
         if not overwrite and skip_transcribed and _is_transcribed(audio_path):
             results.append({"file": audio_path, "success": True, "skipped": True, "duration": 0, "error": None})
             click.echo(f"[~] Skipped (already transcribed): {audio_path.name}")
+            _print_progress()
             continue
         start_time = time.monotonic()
         try:
@@ -62,6 +86,7 @@ def transcribe_batch(
             click.echo(f"[+] {audio_path.name} -> .srt + .txt ({elapsed:.0f}s)")
             click.echo(f"    {srt_path}")
             click.echo(f"    {txt_path}")
+            _print_progress()
         except KeyboardInterrupt:
             for suffix in (".srt.tmp", ".txt.tmp"):
                 tmp = audio_path.with_suffix(suffix)
@@ -73,6 +98,7 @@ def transcribe_batch(
             elapsed = time.monotonic() - start_time
             results.append({"file": audio_path, "success": False, "skipped": False, "duration": elapsed, "error": f"{type(e).__name__}: {e}"})
             click.echo(f"[-] {audio_path.name} -> FAILED: {type(e).__name__}")
+            _print_progress()
     return results
 
 

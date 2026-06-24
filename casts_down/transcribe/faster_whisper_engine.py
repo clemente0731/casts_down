@@ -1,8 +1,59 @@
 """faster-whisper transcription engine."""
+import os
+import platform
+import site
 import time
 from pathlib import Path
 import click
 from casts_down.transcribe.engine import Segment, TranscribeEngine
+
+_WINDOWS_CUDA_DLL_HANDLES = []
+
+
+def _format_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    h, remainder = divmod(seconds, 3600)
+    m, s = divmod(remainder, 60)
+    if h:
+        return f"{h}h{m:02d}m{s:02d}s"
+    return f"{m}m{s:02d}s"
+
+
+def _prepare_windows_cuda_dll_paths() -> list[str]:
+    """Add pip-installed NVIDIA runtime DLL directories to Windows search paths."""
+    if platform.system().lower() != "windows":
+        return []
+
+    candidates = []
+    for site_path in site.getsitepackages():
+        base = Path(site_path) / "nvidia"
+        candidates.extend([
+            base / "cublas" / "bin",
+            base / "cudnn" / "bin",
+            base / "cuda_runtime" / "bin",
+        ])
+
+    path_parts = os.environ.get("PATH", "").split(os.pathsep)
+    normalized_path_parts = {p.lower() for p in path_parts if p}
+    added: list[str] = []
+
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        candidate_str = str(candidate)
+        if candidate_str.lower() not in normalized_path_parts:
+            os.environ["PATH"] = os.environ.get("PATH", "") + os.pathsep + candidate_str
+            normalized_path_parts.add(candidate_str.lower())
+        if hasattr(os, "add_dll_directory"):
+            try:
+                _WINDOWS_CUDA_DLL_HANDLES.append(os.add_dll_directory(candidate_str))
+            except OSError:
+                pass
+        added.append(candidate_str)
+
+    if added:
+        click.echo("[*] Windows CUDA DLL search paths prepared")
+    return added
 
 
 class FasterWhisperEngine(TranscribeEngine):
@@ -14,6 +65,9 @@ class FasterWhisperEngine(TranscribeEngine):
 
     def _load_model(self, device: str | None = None):
         """Load model with specified device."""
+        if device == "cuda":
+            _prepare_windows_cuda_dll_paths()
+
         from faster_whisper import WhisperModel
 
         t0 = time.monotonic()
@@ -37,8 +91,12 @@ class FasterWhisperEngine(TranscribeEngine):
             _ = self._model.model  # force CUDA lib check
             click.echo(f"[*] Transcription engine: faster-whisper (cuda)")
             return
-        except Exception:
-            pass
+        except Exception as e:
+            click.echo(click.style(
+                f"[!] CUDA device fallback: {type(e).__name__}: {e}",
+                fg="yellow",
+            ))
+            click.echo(click.style("[!] Falling back to CPU device.", fg="yellow"))
 
         # Fallback to CPU
         self._load_model("cpu")
@@ -93,7 +151,16 @@ class FasterWhisperEngine(TranscribeEngine):
                     elapsed = time.monotonic() - t0
                     end_mins = int(s.end // 60)
                     end_secs = int(s.end % 60)
-                    click.echo(f"[*] {pct:3d}% | {end_mins}m{end_secs:02d}s / {audio_mins}m{audio_secs:02d}s | {len(results)} segments | {elapsed:.0f}s elapsed")
+                    if pct >= 1 and s.end >= 60:
+                        eta = elapsed / s.end * max(audio_duration - s.end, 0)
+                        eta_text = f"ETA {_format_duration(eta)}"
+                    else:
+                        eta_text = "ETA warming up"
+                    click.echo(
+                        f"[*] {pct:3d}% | {end_mins}m{end_secs:02d}s / "
+                        f"{audio_mins}m{audio_secs:02d}s | {len(results)} segments | "
+                        f"{_format_duration(elapsed)} elapsed | {eta_text}"
+                    )
 
         elapsed = time.monotonic() - t0
         speed_ratio = audio_duration / elapsed if elapsed > 0 else 0
