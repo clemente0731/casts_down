@@ -68,7 +68,11 @@ class TestTranscribeOne:
         assert result["success"] is True
         assert result["skipped"] is True
         assert result["status"] == "backfilled"
-        assert result["outputs"] == [(tmp_path / "done.words.json").resolve()]
+        assert result["outputs"] == [
+            (tmp_path / "done.srt").resolve(),
+            (tmp_path / "done.txt").resolve(),
+            (tmp_path / "done.words.json").resolve(),
+        ]
         assert engine.calls == 0
         assert payload["words"] == [
             {"word": "safe", "count": 2},

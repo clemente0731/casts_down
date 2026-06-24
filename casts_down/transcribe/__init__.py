@@ -80,13 +80,13 @@ def transcribe_one(
                     "duration": 0,
                     "error": None,
                 }
-            words_path = write_word_stats_from_txt(audio_path).resolve()
+            write_word_stats_from_txt(audio_path)
             return {
                 "file": audio_path,
                 "success": True,
                 "skipped": True,
                 "status": "backfilled",
-                "outputs": [words_path],
+                "outputs": _output_paths(audio_path),
                 "duration": 0,
                 "error": None,
             }
