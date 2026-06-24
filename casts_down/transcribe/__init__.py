@@ -5,7 +5,7 @@ from pathlib import Path
 import click
 from casts_down.transcribe.engine import TranscribeEngine
 from casts_down.transcribe.formatter import write_outputs
-from casts_down.transcribe.word_stats import write_word_stats_from_txt, word_stats_path
+from casts_down.transcribe.word_stats import word_stats_is_current, write_word_stats_from_txt, word_stats_path
 
 def detect_engine(model: str = "small"):
     if platform.system() == "Darwin" and platform.machine() == "arm64":
@@ -44,7 +44,7 @@ def _is_transcribed(audio_path: Path) -> bool:
     return (
         audio_path.with_suffix(".srt").exists()
         and audio_path.with_suffix(".txt").exists()
-        and word_stats_path(audio_path).exists()
+        and word_stats_is_current(audio_path)
     )
 
 
@@ -81,7 +81,7 @@ def transcribe_batch(
         if not overwrite and skip_transcribed and _has_transcript(audio_path):
             start_time = time.monotonic()
             try:
-                if not word_stats_path(audio_path).exists():
+                if not word_stats_is_current(audio_path):
                     write_word_stats_from_txt(audio_path)
                     click.echo(f"[*] Backfilled .words.json for {audio_path.name}")
                 results.append({"file": audio_path, "success": True, "skipped": True, "duration": 0, "error": None})

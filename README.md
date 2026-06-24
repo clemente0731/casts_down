@@ -234,12 +234,12 @@ Casts Down does not download existing subtitle files. It generates subtitles and
 2. On Apple Silicon, `mlx-whisper` is preferred when installed; otherwise `faster-whisper` is used.
 3. Whisper returns ordered text segments with start and end timestamps in seconds.
 4. Casts Down writes those segments as `.srt` subtitles, a timestamped `.txt` transcript, and a `.words.json` English word-frequency report next to the audio file.
-5. If `.srt` and `.txt` already exist but `.words.json` is missing, Casts Down backfills `.words.json` from the existing `.txt` without rerunning Whisper.
+5. If `.srt` and `.txt` already exist but `.words.json` is missing or uses an older normalization rule, Casts Down backfills `.words.json` from the existing `.txt` without rerunning Whisper.
 6. If all three outputs already exist, transcription is skipped unless `--overwrite` is used.
 
 The `.srt` file uses the standard subtitle shape: segment number, `HH:MM:SS,mmm --> HH:MM:SS,mmm`, then text.
 
-The `.words.json` file is built from the timestamped `.txt` transcript. Timestamps and numbers are ignored, text is lowercased, punctuation and whitespace are normalized, possessive `'s` is removed, common contractions are expanded, hyphenated words are split, and only English `[a-z]+` tokens are counted. The output includes `total_words`, `unique_words`, and the full word list sorted by count descending, then alphabetically.
+The `.words.json` file is built from the timestamped `.txt` transcript. Timestamps and numbers are ignored, text is lowercased, punctuation and whitespace are normalized, possessive `'s` is removed, common contractions are expanded, hyphenated words are split, and only English `[a-z]+` tokens longer than 3 letters are counted. The output includes `total_words`, `unique_words`, and the full word list sorted by count descending, then alphabetically.
 
 For `faster-whisper`, progress is based on decoded segment timestamps. The first few seconds can include CUDA/model warmup, so ETA is treated as warming up until enough audio has been processed.
 

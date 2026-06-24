@@ -25,11 +25,11 @@ def test_extract_english_words_removes_timestamps_numbers_and_possessive_s():
     assert "netsuite" in words
     assert "everybody" in words
     assert "there" in words
-    assert "it" in words
     assert "state" in words
-    assert "art" in words
-    assert "do" in words
-    assert "not" in words
+    assert "it" not in words
+    assert "art" not in words
+    assert "do" not in words
+    assert "not" not in words
 
 
 def test_extract_english_words_expands_common_contractions():
@@ -37,36 +37,30 @@ def test_extract_english_words_expands_common_contractions():
 
     words = extract_english_words(text)
 
-    assert words == [
-        "i", "am",
-        "here",
-        "we", "are",
-        "calm",
-        "you", "have",
-        "heard",
-        "you", "would",
-        "know",
-        "can", "not",
-        "stop",
-        "does", "not",
-        "fail",
-    ]
+    assert words == ["here", "calm", "have", "heard", "would", "know", "stop", "does", "fail"]
+
+
+def test_extract_english_words_filters_words_with_three_or_fewer_letters():
+    text = "[00:00:01] I am the CEO, and you can see a safe brain learning."
+
+    words = extract_english_words(text)
+
+    assert words == ["safe", "brain", "learning"]
 
 
 def test_build_word_stats_counts_all_words_sorted_by_count_then_word():
     stats = build_word_stats(
-        "Brain brain safe. Am I safe? 123 safe!",
+        "Brain brain safe. Am I safe? 123 safe learning!",
         audio_name="episode.mp3",
     )
 
     assert stats["audio"] == "episode.mp3"
-    assert stats["total_words"] == 7
-    assert stats["unique_words"] == 4
+    assert stats["total_words"] == 6
+    assert stats["unique_words"] == 3
     assert stats["words"] == [
         {"word": "safe", "count": 3},
         {"word": "brain", "count": 2},
-        {"word": "am", "count": 1},
-        {"word": "i", "count": 1},
+        {"word": "learning", "count": 1},
     ]
 
 

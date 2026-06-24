@@ -1,4 +1,5 @@
 """Tests for batch transcription and reporting."""
+import json
 from pathlib import Path
 import pytest
 from casts_down.transcribe.engine import Segment, TranscribeEngine
@@ -106,6 +107,42 @@ class TestTranscribeBatch:
         assert results[0]["skipped"] is True
         assert engine.calls == 0
         assert (tmp_path / "done.words.json").exists()
+
+    def test_existing_transcript_stale_words_json_is_backfilled_without_transcribing(self, tmp_path):
+        audio = tmp_path / "done.mp3"
+        audio.touch()
+        (tmp_path / "done.srt").write_text("existing", encoding="utf-8")
+        (tmp_path / "done.txt").write_text("[00:00:01] I am safe. Safe brain.", encoding="utf-8")
+        (tmp_path / "done.words.json").write_text(
+            json.dumps({
+                "version": 1,
+                "normalization": {"token_pattern": "[a-z]+"},
+                "words": [{"word": "i", "count": 1}],
+            }),
+            encoding="utf-8",
+        )
+
+        class CountingEngine(TranscribeEngine):
+            def __init__(self):
+                self.calls = 0
+
+            def transcribe(self, audio_path, language=None):
+                self.calls += 1
+                return [Segment(0.0, 1.0, "new")]
+
+        engine = CountingEngine()
+
+        from casts_down.transcribe import transcribe_batch
+        results = transcribe_batch([audio], engine=engine, skip_transcribed=True)
+
+        payload = json.loads((tmp_path / "done.words.json").read_text(encoding="utf-8"))
+        assert results[0]["success"] is True
+        assert results[0]["skipped"] is True
+        assert engine.calls == 0
+        assert payload["words"] == [
+            {"word": "safe", "count": 2},
+            {"word": "brain", "count": 1},
+        ]
 
     def test_words_json_backfill_failure_does_not_abort_batch(self, tmp_path):
         a = tmp_path / "bad.mp3"

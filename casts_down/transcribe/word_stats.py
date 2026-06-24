@@ -9,6 +9,8 @@ import unicodedata
 
 TIMESTAMP_RE = re.compile(r"\[\d{1,2}:\d{2}:\d{2}(?:[,.]\d+)?\]")
 WORD_RE = re.compile(r"[a-z]+")
+MIN_WORD_LENGTH = 4
+WORD_STATS_VERSION = 2
 
 CONTRACTIONS = {
     "can't": "can not",
@@ -74,7 +76,7 @@ def _normalize_text(text: str) -> str:
 def extract_english_words(text: str) -> list[str]:
     """Extract normalized English words from timestamped transcript text."""
     normalized = _normalize_text(text)
-    return WORD_RE.findall(normalized)
+    return [word for word in WORD_RE.findall(normalized) if len(word) >= MIN_WORD_LENGTH]
 
 
 def build_word_stats(text: str, audio_name: str) -> dict:
@@ -85,7 +87,7 @@ def build_word_stats(text: str, audio_name: str) -> dict:
         for word, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
     ]
     return {
-        "version": 1,
+        "version": WORD_STATS_VERSION,
         "audio": audio_name,
         "total_words": sum(counts.values()),
         "unique_words": len(counts),
@@ -97,6 +99,7 @@ def build_word_stats(text: str, audio_name: str) -> dict:
             "contractions": "expanded",
             "hyphen": "separator",
             "token_pattern": "[a-z]+",
+            "min_word_length": MIN_WORD_LENGTH,
         },
         "words": words,
     }
@@ -104,6 +107,21 @@ def build_word_stats(text: str, audio_name: str) -> dict:
 
 def word_stats_path(audio_path: Path) -> Path:
     return audio_path.with_suffix(".words.json")
+
+
+def word_stats_is_current(audio_path: Path) -> bool:
+    output_path = word_stats_path(audio_path)
+    if not output_path.exists():
+        return False
+    try:
+        payload = json.loads(output_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    normalization = payload.get("normalization", {})
+    return (
+        payload.get("version") == WORD_STATS_VERSION
+        and normalization.get("min_word_length") == MIN_WORD_LENGTH
+    )
 
 
 def write_word_stats_json(audio_path: Path, transcript_text: str) -> Path:
