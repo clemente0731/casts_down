@@ -530,6 +530,57 @@ async def test_download_job_concurrency_is_capped_by_selected_count_and_user_bud
 
 
 @pytest.mark.asyncio
+async def test_download_job_concurrent_one_transcribes_each_file_before_next_download(
+    tmp_path, monkeypatch
+):
+    event_log = []
+
+    async def download_job(download_concurrent, on_file_done, on_file_failed):
+        assert download_concurrent == 1
+
+        event_log.append("download start first")
+        first = tmp_path / "first.mp3"
+        first.touch()
+        on_file_done(first, {"title": "first"}, "downloaded first")
+        event_log.append("download end first")
+
+        event_log.append("download start second")
+        second = tmp_path / "second.mp3"
+        second.touch()
+        on_file_done(second, {"title": "second"}, "downloaded second")
+        event_log.append("download end second")
+
+    def fake_transcribe_one(audio_path, engine, language=None):
+        event_log.append(f"transcribe {audio_path.name}")
+        return {
+            "status": "succeeded",
+            "outputs": [audio_path.with_suffix(".txt")],
+            "error": None,
+            "duration": 0.01,
+        }
+
+    monkeypatch.setattr("casts_down.pipeline.transcribe_one", fake_transcribe_one)
+
+    result = await run_download_jobs_pipeline(
+        [
+            DownloadJob(
+                source_url="https://example.test/feed.rss",
+                download=download_job,
+                selected_count=2,
+            )
+        ],
+        engine_factory=lambda: object(),
+        user_concurrent=1,
+    )
+
+    assert result.failed_count == 0
+    assert event_log.index("download start first") < event_log.index("transcribe first.mp3")
+    assert event_log.index("transcribe first.mp3") < event_log.index("download end first")
+    assert event_log.index("download end first") < event_log.index("download start second")
+    assert event_log.index("download start second") < event_log.index("transcribe second.mp3")
+
+
+@pytest.mark.asyncio
 async def test_download_job_failure_callback_then_exception_does_not_duplicate_failed_item(tmp_path, monkeypatch):
     async def download_job(download_concurrent, on_file_done, on_file_failed):
         on_file_failed(tmp_path / "bad.mp3", {"title": "bad"}, "HTTP 403")
