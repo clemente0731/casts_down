@@ -11,6 +11,21 @@ from tqdm import tqdm
 from casts_down.downloaders.naming import build_media_filename, dedupe_filename
 
 
+def _call_on_file_done(
+    callback: Callable[[Path, "PodcastEpisode", str], None] | None,
+    path: Path,
+    episode: "PodcastEpisode",
+    message: str,
+) -> None:
+    if not callback:
+        return
+
+    try:
+        callback(path, episode, message)
+    except Exception as e:
+        tqdm.write(f"[!] on_file_done failed for {path.name}: {type(e).__name__}: {e}")
+
+
 class PodcastEpisode:
     """播客剧集数据类"""
     def __init__(self, title: str, audio_url: str, published: str = ""):
@@ -162,8 +177,7 @@ class PodcastDownloader:
                             tqdm.write(f"[+] {message}")
                             output_path = path_map[idx]
                             downloaded_files.append(output_path)
-                            if on_file_done:
-                                on_file_done(output_path, episodes[idx], message)
+                            _call_on_file_done(on_file_done, output_path, episodes[idx], message)
                         else:
                             tqdm.write(f"[-] {message}")
             finally:

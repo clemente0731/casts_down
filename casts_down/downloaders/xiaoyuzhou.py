@@ -13,6 +13,30 @@ from tqdm import tqdm
 from casts_down.downloaders.naming import build_media_filename, dedupe_filename
 
 
+def _warn_on_file_done_failure(path: Path, error: Exception, use_tqdm: bool) -> None:
+    warning = f"[!] on_file_done failed for {path.name}: {type(error).__name__}: {error}"
+    if use_tqdm:
+        tqdm.write(warning)
+    else:
+        click.echo(warning, err=True)
+
+
+def _call_on_file_done(
+    callback: Callable[[Path, dict, str], None] | None,
+    path: Path,
+    episode: dict,
+    message: str,
+    use_tqdm: bool,
+) -> None:
+    if not callback:
+        return
+
+    try:
+        callback(path, episode, message)
+    except Exception as e:
+        _warn_on_file_done_failure(path, e, use_tqdm)
+
+
 class XiaoyuzhouDownloader:
     """小宇宙下载器"""
 
@@ -224,8 +248,13 @@ class XiaoyuzhouDownloader:
             if success:
                 click.echo(f"[+] {message}")
                 downloaded_files.append(output_path)
-                if on_file_done:
-                    on_file_done(output_path, episode_info, message)
+                _call_on_file_done(
+                    on_file_done,
+                    output_path,
+                    episode_info,
+                    message,
+                    use_tqdm=False,
+                )
             else:
                 click.echo(f"[-] {message}", err=True)
                 raise RuntimeError(message)
@@ -314,8 +343,13 @@ class XiaoyuzhouDownloader:
                             tqdm.write(f"[+] {message}")
                             output_path = path_map[idx]
                             downloaded_files.append(output_path)
-                            if on_file_done:
-                                on_file_done(output_path, episodes[idx], message)
+                            _call_on_file_done(
+                                on_file_done,
+                                output_path,
+                                episodes[idx],
+                                message,
+                                use_tqdm=True,
+                            )
                         else:
                             tqdm.write(f"[-] {message}")
             finally:
