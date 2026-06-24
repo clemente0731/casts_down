@@ -39,6 +39,7 @@ lint:
 	python -m py_compile casts_down/downloaders/naming.py
 	python -m py_compile casts_down/downloaders/podcast.py
 	python -m py_compile casts_down/downloaders/xiaoyuzhou.py
+	python -m py_compile casts_down/pipeline.py
 	python -m py_compile casts_down/progress.py
 	python -m py_compile casts_down/timing.py
 	python -m py_compile casts_down/transcribe/__init__.py
