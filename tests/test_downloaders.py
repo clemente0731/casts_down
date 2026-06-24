@@ -21,7 +21,25 @@ class TestPodcastEpisode:
         assert "/" not in result
         assert "?" not in result
         assert ":" not in result
+        assert result == "my-podcast--episode-test-title.mp3"
         assert result.endswith(".mp3")
+
+    def test_sanitize_filename_normalizes_punctuation(self):
+        ep = PodcastEpisode(
+            title="Dr Rachel Rubin: Women’s Sexual Health, Menopause, Hormone Replacement Therapy (HRT), and Orgasms!",
+            audio_url="https://example.com/audio.mp3",
+        )
+        result = ep.sanitize_filename("The Diary Of A CEO with Steven Bartlett")
+
+        assert result == (
+            "the-diary-of-a-ceo-with-steven-bartlett--"
+            "dr-rachel-rubin-womens-sexual-health-menopause-"
+            "hormone-replacement-therapy-hrt-and-orgasms.mp3"
+        )
+        assert "_" not in result
+        assert "’" not in result
+        assert "," not in result
+        assert "!" not in result
 
     def test_sanitize_filename_m4a(self):
         ep = PodcastEpisode(title="Test Episode", audio_url="https://example.com/audio.m4a")
@@ -37,6 +55,11 @@ class TestPodcastEpisode:
         ep = PodcastEpisode(title="A" * 200, audio_url="https://example.com/audio.mp3")
         result = ep.sanitize_filename("P")
         assert len(result.encode('utf-8')) <= 250
+
+    def test_sanitize_filename_preserves_cjk_text(self):
+        ep = PodcastEpisode(title="第 42 集：AI × 播客？", audio_url="https://example.com/audio.mp3")
+        result = ep.sanitize_filename("科技早知道")
+        assert result == "科技早知道--第-42-集-ai-播客.mp3"
 
     def test_total_filename_length_capped(self):
         ep = PodcastEpisode(title="A" * 200, audio_url="https://example.com/audio.mp3")
@@ -309,7 +332,7 @@ class TestDownloadAll:
                     files = await dl.download_all([episode], "Podcast", Path(tmpdir))
 
         assert len(files) == 1
-        assert "Test_Ep" in files[0].name
+        assert files[0].name == "podcast--test-ep.mp3"
 
     @pytest.mark.asyncio
     async def test_multiple_episodes_all_tracked(self):
@@ -338,7 +361,34 @@ class TestDownloadAll:
         assert len(files) == 5
         titles = {f.stem for f in files}
         for i in range(5):
-            assert any(f"Ep_{i}" in t for t in titles)
+            assert any(f"ep-{i}" in t for t in titles)
+
+    @pytest.mark.asyncio
+    async def test_colliding_episode_filenames_are_deduped(self, tmp_path):
+        from casts_down.downloaders.base import PodcastDownloader, PodcastEpisode
+
+        episodes = [
+            PodcastEpisode(title="Ep!", audio_url="https://example.com/a.mp3"),
+            PodcastEpisode(title="Ep?", audio_url="https://example.com/b.mp3"),
+        ]
+        dl = PodcastDownloader(concurrent=2)
+
+        async def fake_download(session, ep, path, skip, progress_callback=None):
+            path.write_bytes(ep.title.encode())
+            return True, f"Done: {path.name}"
+
+        dl.download_episode = fake_download
+
+        with patch("casts_down.downloaders.base.aiohttp.ClientSession") as mock_cs:
+            mock_cs.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+            mock_cs.return_value.__aexit__ = AsyncMock(return_value=False)
+            files = await dl.download_all(episodes, "Podcast", tmp_path)
+
+        assert sorted(path.name for path in files) == [
+            "podcast--ep-2.mp3",
+            "podcast--ep.mp3",
+        ]
+        assert (tmp_path / "podcast--ep.mp3").read_bytes() != (tmp_path / "podcast--ep-2.mp3").read_bytes()
 
     @pytest.mark.asyncio
     async def test_partial_failure_tracked(self):
@@ -367,7 +417,7 @@ class TestDownloadAll:
                 files = await dl.download_all(episodes, "Podcast", Path(tmpdir))
 
         assert len(files) == 1
-        assert "Good" in files[0].name
+        assert "good" in files[0].name
 
 
 # ---------------------------------------------------------------------------
@@ -588,6 +638,57 @@ class TestDryRunXiaoyuzhouParser:
         from casts_down.downloaders.xiaoyuzhou import XiaoyuzhouDownloader
         source = inspect.getsource(XiaoyuzhouDownloader)
         assert "sys.exit" not in source
+
+    @pytest.mark.asyncio
+    async def test_podcast_download_uses_friendly_filename(self, tmp_path):
+        from casts_down.downloaders.xiaoyuzhou import XiaoyuzhouDownloader
+
+        dl = XiaoyuzhouDownloader()
+
+        async def fake_get_podcast_episodes(session, podcast_url):
+            return "My Podcast", [
+                {
+                    "title": "Ep: One/Two? Women’s Health!",
+                    "enclosure": {"url": "https://example.com/audio.m4a"},
+                }
+            ]
+
+        async def fake_download_audio(session, audio_url, output_path, skip_existing, progress_callback=None):
+            output_path.write_bytes(b"data")
+            return True, f"Completed: {output_path.name}"
+
+        dl.get_podcast_episodes = fake_get_podcast_episodes
+        dl.download_audio = fake_download_audio
+
+        files = await dl.download_podcast("https://www.xiaoyuzhoufm.com/podcast/abc", tmp_path)
+
+        assert [path.name for path in files] == ["my-podcast--ep-one-two-womens-health.m4a"]
+
+    @pytest.mark.asyncio
+    async def test_podcast_download_dedupes_colliding_filenames(self, tmp_path):
+        from casts_down.downloaders.xiaoyuzhou import XiaoyuzhouDownloader
+
+        dl = XiaoyuzhouDownloader()
+
+        async def fake_get_podcast_episodes(session, podcast_url):
+            return "My Podcast", [
+                {"title": "Ep!", "enclosure": {"url": "https://example.com/a.m4a"}},
+                {"title": "Ep?", "enclosure": {"url": "https://example.com/b.m4a"}},
+            ]
+
+        async def fake_download_audio(session, audio_url, output_path, skip_existing, progress_callback=None):
+            output_path.write_bytes(audio_url.encode())
+            return True, f"Completed: {output_path.name}"
+
+        dl.get_podcast_episodes = fake_get_podcast_episodes
+        dl.download_audio = fake_download_audio
+
+        files = await dl.download_podcast("https://www.xiaoyuzhoufm.com/podcast/abc", tmp_path)
+
+        assert sorted(path.name for path in files) == [
+            "my-podcast--ep-2.m4a",
+            "my-podcast--ep.m4a",
+        ]
 
 
 class TestDryRunTranscriptionPipeline:

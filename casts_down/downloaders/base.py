@@ -1,14 +1,14 @@
 """Base classes for podcast downloading."""
 
 import asyncio
-import re
 from pathlib import Path
 from typing import Callable
-from urllib.parse import urlparse
 
 import aiohttp
 import click
 from tqdm import tqdm
+
+from casts_down.downloaders.naming import build_media_filename, dedupe_filename
 
 
 class PodcastEpisode:
@@ -19,21 +19,13 @@ class PodcastEpisode:
         self.published = published
 
     def sanitize_filename(self, podcast_name: str) -> str:
-        """生成安全的文件名（空格替换为下划线）"""
-        safe_title = re.sub(r'[<>:"/\\|?*]', '', self.title)
-        safe_podcast = re.sub(r'[<>:"/\\|?*]', '', podcast_name)
-        safe_title = safe_title.replace(' ', '_')
-        safe_podcast = safe_podcast.replace(' ', '_')
-
-        parsed = urlparse(self.audio_url)
-        ext = Path(parsed.path).suffix or '.mp3'
-
-        # Cap total filename to 240 bytes (reserve for ext + .tmp suffix)
-        max_base = 240 - len(ext.encode('utf-8')) - 3  # 3 for "_-_"
-        safe_podcast = safe_podcast[:max_base // 2]
-        safe_title = safe_title[:max_base - len(safe_podcast.encode('utf-8'))]
-
-        return f"{safe_podcast}_-_{safe_title}{ext}"
+        """生成安全、可读的媒体文件名。"""
+        return build_media_filename(
+            episode_title=self.title,
+            audio_url=self.audio_url,
+            podcast_name=podcast_name,
+            default_ext=".mp3",
+        )
 
 
 class PodcastDownloader:
@@ -145,8 +137,10 @@ class PodcastDownloader:
 
             try:
                 futs = []
+                used_names: set[str] = set()
                 for i, episode in enumerate(episodes):
-                    filename = episode.sanitize_filename(podcast_name)
+                    filename = dedupe_filename(episode.sanitize_filename(podcast_name), used_names)
+                    used_names.add(filename)
                     output_path = output_dir / filename
                     path_map[i] = output_path
                     futs.append(asyncio.ensure_future(

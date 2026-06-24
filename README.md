@@ -65,13 +65,13 @@ Adds mlx-whisper for Metal GPU acceleration. Falls back to faster-whisper CPU if
 
 ```bash
 # Latest release
-pip install git+https://github.com/host452b/casts_down.git@v2.3.1
+pip install git+https://github.com/host452b/casts_down.git@v2.3.2
 
 # Latest main branch
 pip install git+https://github.com/host452b/casts_down.git
 
 # SSH
-pip install git+ssh://git@github.com/host452b/casts_down.git@v2.3.1
+pip install git+ssh://git@github.com/host452b/casts_down.git@v2.3.2
 ```
 
 ### Install from source
@@ -261,10 +261,12 @@ Total: 13m27s
 
 ```
 podcasts/
-  My Podcast - Episode 1.mp3
-  My Podcast - Episode 1.srt     # SRT subtitle (00:01:23,456 --> 00:01:27,890)
-  My Podcast - Episode 1.txt     # [00:01:23] Timestamped plain text
+  my-podcast--episode-1.mp3
+  my-podcast--episode-1.srt     # SRT subtitle (00:01:23,456 --> 00:01:27,890)
+  my-podcast--episode-1.txt     # [00:01:23] Timestamped plain text
 ```
+
+Downloaded filenames are normalized to readable kebab-case. Smart quotes, commas, brackets, and other punctuation are removed or converted to separators, while CJK text is preserved. If two episodes normalize to the same name, Casts Down adds a numeric suffix before the extension to avoid overwriting output files.
 
 ## Examples
 

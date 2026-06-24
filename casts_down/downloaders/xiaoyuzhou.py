@@ -10,6 +10,8 @@ import aiohttp
 import click
 from tqdm import tqdm
 
+from casts_down.downloaders.naming import build_media_filename, dedupe_filename
+
 
 class XiaoyuzhouDownloader:
     """小宇宙下载器"""
@@ -184,9 +186,11 @@ class XiaoyuzhouDownloader:
 
             output_dir.mkdir(parents=True, exist_ok=True)
 
-            # 清理文件名
-            safe_title = re.sub(r'[<>:"/\\|?*]', '', episode_info['title']).replace(' ', '_')
-            filename = f"{safe_title}.m4a"
+            filename = build_media_filename(
+                episode_title=episode_info['title'],
+                audio_url=episode_info['audio_url'],
+                default_ext=".m4a",
+            )
             output_path = output_dir / filename
 
             click.echo("[*] Starting download...\n")
@@ -278,10 +282,15 @@ class XiaoyuzhouDownloader:
 
             try:
                 futs = []
+                used_names: set[str] = set()
                 for i, episode in enumerate(episodes):
-                    safe_title = re.sub(r'[<>:"/\\|?*]', '', episode['title']).replace(' ', '_')
-                    safe_podcast = re.sub(r'[<>:"/\\|?*]', '', podcast_name).replace(' ', '_')
-                    filename = f"{safe_podcast}_-_{safe_title}.m4a"
+                    filename = dedupe_filename(build_media_filename(
+                        episode_title=episode['title'],
+                        audio_url=episode['enclosure']['url'],
+                        podcast_name=podcast_name,
+                        default_ext=".m4a",
+                    ), used_names)
+                    used_names.add(filename)
                     output_path = output_dir / filename
                     path_map[i] = output_path
                     futs.append(asyncio.ensure_future(

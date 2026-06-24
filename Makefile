@@ -36,6 +36,7 @@ lint:
 	python -m py_compile casts_down/__init__.py
 	python -m py_compile casts_down/cli.py
 	python -m py_compile casts_down/downloaders/base.py
+	python -m py_compile casts_down/downloaders/naming.py
 	python -m py_compile casts_down/downloaders/podcast.py
 	python -m py_compile casts_down/downloaders/xiaoyuzhou.py
 	python -m py_compile casts_down/timing.py
