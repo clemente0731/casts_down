@@ -156,6 +156,44 @@ Transcribe audio files or directories. Outputs `.srt` (subtitle) and `.txt` (tim
 | `--skip-transcribed` | | Skip files already transcribed | on |
 | `--overwrite` | | Force re-transcribe existing outputs | off |
 
+### Model Selection
+
+`--model` is passed directly to the active Whisper backend. For predictable cross-platform behavior, use these stable model names:
+
+| Model | Quality | Speed | Approx. memory / VRAM | Best for |
+|-------|---------|-------|------------------------|----------|
+| `tiny` | Low | Fastest | ~1 GB class | Quick checks, smoke tests |
+| `base` | Basic | Very fast | 1-2 GB | Low-spec CPU machines |
+| `small` | Good | Fast | ~2 GB VRAM; 2-4 GB RAM | Default choice for podcasts |
+| `medium` | Better | Medium | ~5 GB VRAM; 8 GB+ RAM | Chinese, noisy audio, accents |
+| `large-v3` | Best | Slow | ~10 GB VRAM; 16 GB+ RAM | Quality-first transcription |
+
+English-only variants are also useful for English audio: `tiny.en`, `base.en`, `small.en`, and `medium.en`. They are usually most helpful on smaller models.
+
+Recommended choices:
+
+```bash
+# Balanced default
+casts-down transcribe audio.mp3 --model small
+
+# Low-spec CPU or quick preview
+casts-down transcribe audio.mp3 --model base
+
+# Better Chinese or noisy-audio quality
+casts-down transcribe audio.mp3 --model medium --language zh
+
+# Best quality when GPU/RAM is available
+casts-down transcribe audio.mp3 --model large-v3
+```
+
+Notes:
+
+- Larger models improve recognition quality but increase model download size, memory use, startup time, and transcription time.
+- `small` is the recommended default for most podcast workflows.
+- `medium` is the practical upgrade when `small` misses words, names, accents, or Chinese content.
+- `large-v3` is best reserved for quality-sensitive runs on machines with enough GPU/RAM.
+- Advanced model names such as `turbo` or `distil-large-v3` may work on some backends, but they are not listed as the main path because availability differs between `faster-whisper` and `mlx-whisper`.
+
 ### Setup (Optional)
 
 ```bash
