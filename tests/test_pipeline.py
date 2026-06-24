@@ -183,6 +183,133 @@ async def test_first_completed_download_is_transcribed_before_later_download_fin
 
 
 @pytest.mark.asyncio
+async def test_unexpected_transcription_exception_does_not_stop_pipeline(
+    tmp_path, monkeypatch
+):
+    items = [
+        PipelineItem(1, "https://example.test/bad.mp3", "bad"),
+        PipelineItem(2, "https://example.test/good.mp3", "good"),
+    ]
+
+    async def download_one(item, on_done):
+        path = tmp_path / f"{item.title}.mp3"
+        path.touch()
+        on_done(item, path, f"downloaded {item.title}")
+
+    def fake_transcribe_one(audio_path, engine, language=None):
+        if audio_path.name == "bad.mp3":
+            raise RuntimeError("thread exploded")
+        return {
+            "status": "succeeded",
+            "outputs": [audio_path.with_suffix(".txt")],
+            "error": None,
+            "duration": 0.01,
+        }
+
+    monkeypatch.setattr("casts_down.pipeline.transcribe_one", fake_transcribe_one)
+
+    result = await asyncio.wait_for(
+        run_file_pipeline(
+            items,
+            download_one=download_one,
+            engine=object(),
+            user_concurrent=2,
+            transcribe=True,
+        ),
+        timeout=1,
+    )
+
+    assert result.failed_count == 1
+    assert items[0].transcribe_status == "failed"
+    assert items[0].error == "RuntimeError: thread exploded"
+    assert items[0].transcribe_elapsed > 0
+    assert items[1].transcribe_status == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_on_done_transcribes_item_once(tmp_path, monkeypatch):
+    event_log = []
+    items = [
+        PipelineItem(1, "https://example.test/dup.mp3", "dup"),
+        PipelineItem(2, "https://example.test/other.mp3", "other"),
+    ]
+
+    async def download_one(item, on_done):
+        path = tmp_path / f"{item.title}.mp3"
+        path.touch()
+        on_done(item, path, f"downloaded {item.title}")
+        if item.title == "dup":
+            on_done(item, path, f"downloaded {item.title} again")
+
+    def fake_transcribe_one(audio_path, engine, language=None):
+        return {
+            "status": "succeeded",
+            "outputs": [audio_path.with_suffix(".txt")],
+            "error": None,
+            "duration": 0.01,
+        }
+
+    monkeypatch.setattr("casts_down.pipeline.transcribe_one", fake_transcribe_one)
+
+    result = await run_file_pipeline(
+        items,
+        download_one=download_one,
+        engine=object(),
+        user_concurrent=2,
+        transcribe=True,
+        event_log=event_log,
+    )
+
+    assert result.failed_count == 0
+    assert event_log.count("transcribe dup.mp3") == 1
+    assert event_log.count("transcribe other.mp3") == 1
+
+
+@pytest.mark.asyncio
+async def test_on_done_then_download_exception_preserves_success_and_transcribes_once(
+    tmp_path, monkeypatch
+):
+    event_log = []
+    items = [
+        PipelineItem(1, "https://example.test/fragile.mp3", "fragile"),
+        PipelineItem(2, "https://example.test/other.mp3", "other"),
+    ]
+
+    async def download_one(item, on_done):
+        path = tmp_path / f"{item.title}.mp3"
+        path.touch()
+        on_done(item, path, f"downloaded {item.title}")
+        if item.title == "fragile":
+            raise RuntimeError("late download failure")
+
+    def fake_transcribe_one(audio_path, engine, language=None):
+        return {
+            "status": "succeeded",
+            "outputs": [audio_path.with_suffix(".txt")],
+            "error": None,
+            "duration": 0.01,
+        }
+
+    monkeypatch.setattr("casts_down.pipeline.transcribe_one", fake_transcribe_one)
+
+    result = await run_file_pipeline(
+        items,
+        download_one=download_one,
+        engine=object(),
+        user_concurrent=2,
+        transcribe=True,
+        event_log=event_log,
+    )
+
+    assert result.failed_count == 0
+    assert items[0].download_status == "succeeded"
+    assert items[0].transcribe_status == "succeeded"
+    assert items[0].error is None
+    assert event_log.count("transcribe fragile.mp3") == 1
+    assert items[1].transcribe_status == "succeeded"
+
+
+@pytest.mark.asyncio
 async def test_download_failure_does_not_enqueue_transcription_and_later_items_succeed(
     tmp_path, monkeypatch
 ):

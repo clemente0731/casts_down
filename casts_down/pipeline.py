@@ -77,6 +77,8 @@ async def run_file_pipeline(
     transcribe_queue: asyncio.Queue[PipelineItem | None] = asyncio.Queue()
 
     def on_done(item: PipelineItem, path: Path, message: str) -> None:
+        if item.audio_path is not None or item.download_status == "succeeded":
+            return
         item.audio_path = Path(path)
         item.download_status = "succeeded"
         if transcribe_workers > 0:
@@ -149,6 +151,8 @@ async def _download_item(
             item.download_status = "succeeded"
             item.transcribe_status = "skipped"
     except Exception as exc:
+        if item.audio_path is not None or item.download_status == "succeeded":
+            return
         item.download_status = "failed"
         item.transcribe_status = "skipped"
         item.error = f"{type(exc).__name__}: {exc}"
@@ -171,12 +175,18 @@ async def _transcribe_item(
     if event_log is not None:
         event_log.append(f"transcribe {item.audio_path.name}")
     started_at = time.monotonic()
-    result = await asyncio.to_thread(
-        transcribe_one,
-        item.audio_path,
-        engine=engine,
-        language=language,
-    )
+    try:
+        result = await asyncio.to_thread(
+            transcribe_one,
+            item.audio_path,
+            engine=engine,
+            language=language,
+        )
+    except Exception as exc:
+        item.transcribe_elapsed = time.monotonic() - started_at
+        item.transcribe_status = "failed"
+        item.error = f"{type(exc).__name__}: {exc}"
+        return
     item.transcribe_elapsed = float(
         result.get("duration") or time.monotonic() - started_at
     )
