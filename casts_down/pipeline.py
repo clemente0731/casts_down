@@ -82,7 +82,7 @@ async def run_file_pipeline(
         if transcribe_workers > 0:
             item.transcribe_status = "queued"
             transcribe_queue.put_nowait(item)
-        else:
+        elif not transcribe:
             item.transcribe_status = "skipped"
 
     async def run_transcription_worker() -> None:
@@ -103,6 +103,12 @@ async def run_file_pipeline(
                 return
             try:
                 await _download_item(item, download_one, on_done)
+                if (
+                    transcribe
+                    and transcribe_workers == 0
+                    and item.download_status == "succeeded"
+                ):
+                    await _transcribe_item(item, engine, language, event_log)
             finally:
                 queue.task_done()
 

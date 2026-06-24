@@ -30,6 +30,114 @@ def test_allocate_pipeline_workers_reserves_one_worker_for_transcription():
 
 
 @pytest.mark.asyncio
+async def test_single_selected_item_still_transcribes_without_overlap(tmp_path, monkeypatch):
+    event_log = []
+    items = [PipelineItem(1, "https://example.test/only.mp3", "only")]
+
+    async def download_one(item, on_done):
+        path = tmp_path / "only.mp3"
+        path.touch()
+        on_done(item, path, "downloaded only")
+        event_log.append("download end only")
+
+    def fake_transcribe_one(audio_path, engine, language=None):
+        return {
+            "status": "succeeded",
+            "outputs": [audio_path.with_suffix(".txt")],
+            "error": None,
+            "duration": 0.01,
+        }
+
+    monkeypatch.setattr("casts_down.pipeline.transcribe_one", fake_transcribe_one)
+
+    result = await run_file_pipeline(
+        items,
+        download_one=download_one,
+        engine=object(),
+        user_concurrent=3,
+        transcribe=True,
+        event_log=event_log,
+    )
+
+    assert allocate_pipeline_workers(3, 1, transcribe=True) == (1, 0)
+    assert result.failed_count == 0
+    assert items[0].download_status == "succeeded"
+    assert items[0].transcribe_status == "succeeded"
+    assert event_log == ["download end only", "transcribe only.mp3"]
+
+
+@pytest.mark.asyncio
+async def test_single_worker_transcribes_items_sequentially(tmp_path, monkeypatch):
+    event_log = []
+    items = [
+        PipelineItem(1, "https://example.test/first.mp3", "first"),
+        PipelineItem(2, "https://example.test/second.mp3", "second"),
+    ]
+
+    async def download_one(item, on_done):
+        event_log.append(f"download start {item.title}")
+        path = tmp_path / f"{item.title}.mp3"
+        path.touch()
+        on_done(item, path, f"downloaded {item.title}")
+        event_log.append(f"download end {item.title}")
+
+    def fake_transcribe_one(audio_path, engine, language=None):
+        return {
+            "status": "succeeded",
+            "outputs": [audio_path.with_suffix(".txt")],
+            "error": None,
+            "duration": 0.01,
+        }
+
+    monkeypatch.setattr("casts_down.pipeline.transcribe_one", fake_transcribe_one)
+
+    result = await run_file_pipeline(
+        items,
+        download_one=download_one,
+        engine=object(),
+        user_concurrent=1,
+        transcribe=True,
+        event_log=event_log,
+    )
+
+    assert result.failed_count == 0
+    assert [item.transcribe_status for item in items] == ["succeeded", "succeeded"]
+    assert event_log.index("download end first") < event_log.index("transcribe first.mp3")
+    assert event_log.index("transcribe first.mp3") < event_log.index("download start second")
+
+
+@pytest.mark.asyncio
+async def test_transcribe_false_skips_transcription(tmp_path, monkeypatch):
+    event_log = []
+    items = [PipelineItem(1, "https://example.test/only.mp3", "only")]
+
+    async def download_one(item, on_done):
+        path = tmp_path / "only.mp3"
+        path.touch()
+        on_done(item, path, "downloaded only")
+        event_log.append("download end only")
+
+    def fake_transcribe_one(audio_path, engine, language=None):
+        raise AssertionError("transcribe_one should not be called")
+
+    monkeypatch.setattr("casts_down.pipeline.transcribe_one", fake_transcribe_one)
+
+    result = await run_file_pipeline(
+        items,
+        download_one=download_one,
+        engine=object(),
+        user_concurrent=1,
+        transcribe=False,
+        event_log=event_log,
+    )
+
+    assert result.failed_count == 0
+    assert items[0].download_status == "succeeded"
+    assert items[0].transcribe_status == "skipped"
+    assert event_log == ["download end only"]
+
+
+@pytest.mark.asyncio
 async def test_first_completed_download_is_transcribed_before_later_download_finishes(
     tmp_path, monkeypatch
 ):
