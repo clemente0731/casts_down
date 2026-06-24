@@ -125,6 +125,18 @@ casts-down transcribe ./podcasts/          # entire directory
 casts-down <URL> [OPTIONS]
 ```
 
+With no episode-selection flags, Casts Down downloads the latest episode and transcribes it with the default model. For example, this command:
+
+```bash
+casts-down "https://podcasts.apple.com/us/podcast/example-show/id1234567890"
+```
+
+is equivalent to:
+
+```bash
+casts-down "https://podcasts.apple.com/us/podcast/example-show/id1234567890" --latest 1 --transcribe --model small
+```
+
 Download options can appear before or after the URL. Invalid combinations fail before any network request:
 
 - Use either `--all` or `--latest N`, not both.
@@ -279,19 +291,45 @@ casts-down "https://feeds.npr.org/510318/podcast.xml" --latest 3
 ### Download from Apple Podcasts
 
 ```bash
-casts-down "https://podcasts.apple.com/us/podcast/the-daily/id1200361736" --all
+casts-down "https://podcasts.apple.com/us/podcast/example-show/id1234567890" --all
 ```
 
-### Download only (no transcription)
+### Download latest 50 episodes
+
+```bash
+casts-down "https://podcasts.apple.com/us/podcast/example-show/id1234567890" \
+  --latest 50 \
+  --output ./podcasts/example-show \
+  --skip-existing \
+  --concurrent 5 \
+  --no-transcribe
+```
+
+### Download all available episodes
+
+```bash
+casts-down "https://podcasts.apple.com/us/podcast/example-show/id1234567890" \
+  --all \
+  --output ./podcasts/example-show \
+  --skip-existing \
+  --no-transcribe
+```
+
+### Download and transcribe latest 50 episodes
+
+```bash
+casts-down "https://podcasts.apple.com/us/podcast/example-show/id1234567890" \
+  --latest 50 \
+  --output ./podcasts/example-show \
+  --skip-existing \
+  --model small \
+  --language en
+```
+
+### Download from RSS only
 
 ```bash
 casts-down "https://feeds.example.com/podcast.rss" --latest 5 --no-transcribe
-```
-
-### Batch download with skip existing
-
-```bash
-casts-down "https://feeds.example.com/podcast.rss" --all -o ./downloads --skip-existing
 ```
 
 ### Transcribe a directory of audio files
