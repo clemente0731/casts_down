@@ -891,6 +891,33 @@ class TestDryRunXiaoyuzhouParser:
         assert "ValueError: callback broke" in warning_output
 
     @pytest.mark.asyncio
+    async def test_podcast_download_does_not_call_callback_on_failure(self, tmp_path):
+        from casts_down.downloaders.xiaoyuzhou import XiaoyuzhouDownloader
+
+        dl = XiaoyuzhouDownloader()
+        callback_events = []
+
+        async def fake_get_podcast_episodes(session, podcast_url):
+            return "My Podcast", [
+                {"title": "Ep One", "enclosure": {"url": "https://example.com/one.m4a"}},
+            ]
+
+        async def fake_download_audio(session, audio_url, output_path, skip_existing, progress_callback=None):
+            return False, "HTTP 403"
+
+        dl.get_podcast_episodes = fake_get_podcast_episodes
+        dl.download_audio = fake_download_audio
+
+        files = await dl.download_podcast(
+            "https://www.xiaoyuzhoufm.com/podcast/abc",
+            tmp_path,
+            on_file_done=lambda *args: callback_events.append(args),
+        )
+
+        assert files == []
+        assert callback_events == []
+
+    @pytest.mark.asyncio
     async def test_episode_download_callback_receives_success_message(self, tmp_path):
         from casts_down.downloaders.xiaoyuzhou import XiaoyuzhouDownloader
 
@@ -967,6 +994,39 @@ class TestDryRunXiaoyuzhouParser:
         warning_output = captured.out + captured.err
         assert "[!] on_file_done failed for ep-one.m4a" in warning_output
         assert "LookupError: callback broke" in warning_output
+
+    @pytest.mark.asyncio
+    async def test_episode_download_does_not_call_callback_on_failure(self, tmp_path):
+        from casts_down.downloaders.xiaoyuzhou import XiaoyuzhouDownloader
+
+        dl = XiaoyuzhouDownloader()
+        callback_events = []
+        episode_info = {
+            "eid": "abc",
+            "title": "Ep One",
+            "audio_url": "https://example.com/audio.m4a",
+            "duration": 123,
+            "description": "",
+            "pubDate": "",
+        }
+
+        async def fake_get_episode_info(session, episode_url):
+            return episode_info
+
+        async def fake_download_audio(session, audio_url, output_path, skip_existing, progress_callback=None):
+            return False, "HTTP 403"
+
+        dl.get_episode_info = fake_get_episode_info
+        dl.download_audio = fake_download_audio
+
+        with pytest.raises(RuntimeError, match="HTTP 403"):
+            await dl.download_episode_by_url(
+                "https://www.xiaoyuzhoufm.com/episode/abc",
+                tmp_path,
+                on_file_done=lambda *args: callback_events.append(args),
+            )
+
+        assert callback_events == []
 
 
 class TestDryRunTranscriptionPipeline:
