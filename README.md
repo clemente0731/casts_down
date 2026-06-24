@@ -65,13 +65,13 @@ Adds mlx-whisper for Metal GPU acceleration. Falls back to faster-whisper CPU if
 
 ```bash
 # Latest release
-pip install git+https://github.com/host452b/casts_down.git@v2.3.2
+pip install git+https://github.com/host452b/casts_down.git@v2.3.3
 
 # Latest main branch
 pip install git+https://github.com/host452b/casts_down.git
 
 # SSH
-pip install git+ssh://git@github.com/host452b/casts_down.git@v2.3.2
+pip install git+ssh://git@github.com/host452b/casts_down.git@v2.3.3
 ```
 
 ### Install from source
