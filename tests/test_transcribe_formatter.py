@@ -59,12 +59,13 @@ class TestFormatTxt:
         assert result == ""
 
 class TestWriteOutputs:
-    def test_writes_srt_and_txt(self, tmp_path, sample_segments):
+    def test_writes_srt_txt_and_words_json(self, tmp_path, sample_segments):
         audio_path = tmp_path / "episode.mp3"
         audio_path.touch()
         write_outputs(audio_path, sample_segments)
         assert (tmp_path / "episode.srt").exists()
         assert (tmp_path / "episode.txt").exists()
+        assert (tmp_path / "episode.words.json").exists()
 
     def test_utf8_encoding(self, tmp_path, sample_segments):
         audio_path = tmp_path / "episode.mp3"
@@ -96,8 +97,10 @@ class TestWriteOutputs:
         with tempfile.TemporaryDirectory() as tmpdir:
             audio_path = Path(tmpdir) / "test.mp3"
             audio_path.write_bytes(b"fake")
-            srt, txt = write_outputs(audio_path, segments)
+            srt, txt, words_json = write_outputs(audio_path, segments)
             assert srt.exists()
             assert txt.exists()
+            assert words_json.exists()
             assert srt.suffix == ".srt"
             assert txt.suffix == ".txt"
+            assert words_json.name == "test.words.json"

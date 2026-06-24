@@ -5,6 +5,7 @@ from pathlib import Path
 import click
 from casts_down.transcribe.engine import TranscribeEngine
 from casts_down.transcribe.formatter import write_outputs
+from casts_down.transcribe.word_stats import write_word_stats_from_txt, word_stats_path
 
 def detect_engine(model: str = "small"):
     if platform.system() == "Darwin" and platform.machine() == "arm64":
@@ -40,6 +41,14 @@ def collect_audio_files(directory: Path) -> list[Path]:
 
 
 def _is_transcribed(audio_path: Path) -> bool:
+    return (
+        audio_path.with_suffix(".srt").exists()
+        and audio_path.with_suffix(".txt").exists()
+        and word_stats_path(audio_path).exists()
+    )
+
+
+def _has_transcript(audio_path: Path) -> bool:
     return audio_path.with_suffix(".srt").exists() and audio_path.with_suffix(".txt").exists()
 
 
@@ -69,26 +78,37 @@ def transcribe_batch(
         )
 
     for audio_path in files:
-        if not overwrite and skip_transcribed and _is_transcribed(audio_path):
-            results.append({"file": audio_path, "success": True, "skipped": True, "duration": 0, "error": None})
-            click.echo(f"[~] Skipped (already transcribed): {audio_path.name}")
+        if not overwrite and skip_transcribed and _has_transcript(audio_path):
+            start_time = time.monotonic()
+            try:
+                if not word_stats_path(audio_path).exists():
+                    write_word_stats_from_txt(audio_path)
+                    click.echo(f"[*] Backfilled .words.json for {audio_path.name}")
+                results.append({"file": audio_path, "success": True, "skipped": True, "duration": 0, "error": None})
+                click.echo(f"[~] Skipped (already transcribed): {audio_path.name}")
+            except Exception as e:
+                elapsed = time.monotonic() - start_time
+                results.append({"file": audio_path, "success": False, "skipped": False, "duration": elapsed, "error": f"{type(e).__name__}: {e}"})
+                click.echo(f"[-] {audio_path.name} -> FAILED: {type(e).__name__}")
             _print_progress()
             continue
         start_time = time.monotonic()
         try:
             segments = engine.transcribe(audio_path, language=language)
-            click.echo(f"[*] Writing .srt + .txt for {audio_path.name} ...")
+            click.echo(f"[*] Writing .srt + .txt + .words.json for {audio_path.name} ...")
             write_outputs(audio_path, segments)
             elapsed = time.monotonic() - start_time
             srt_path = audio_path.with_suffix(".srt").resolve()
             txt_path = audio_path.with_suffix(".txt").resolve()
+            words_path = word_stats_path(audio_path).resolve()
             results.append({"file": audio_path, "success": True, "skipped": False, "duration": elapsed, "error": None})
-            click.echo(f"[+] {audio_path.name} -> .srt + .txt ({elapsed:.0f}s)")
+            click.echo(f"[+] {audio_path.name} -> .srt + .txt + .words.json ({elapsed:.0f}s)")
             click.echo(f"    {srt_path}")
             click.echo(f"    {txt_path}")
+            click.echo(f"    {words_path}")
             _print_progress()
         except KeyboardInterrupt:
-            for suffix in (".srt.tmp", ".txt.tmp"):
+            for suffix in (".srt.tmp", ".txt.tmp", ".words.json.tmp"):
                 tmp = audio_path.with_suffix(suffix)
                 if tmp.exists():
                     tmp.unlink()
@@ -117,9 +137,11 @@ def print_report(results: list[dict]) -> None:
             secs = int(r["duration"] % 60)
             srt_path = audio_path.with_suffix(".srt").resolve()
             txt_path = audio_path.with_suffix(".txt").resolve()
-            click.echo(f"[+] {name} -> .srt + .txt ({mins}m{secs:02d}s)")
+            words_path = word_stats_path(audio_path).resolve()
+            click.echo(f"[+] {name} -> .srt + .txt + .words.json ({mins}m{secs:02d}s)")
             click.echo(f"    {srt_path}")
             click.echo(f"    {txt_path}")
+            click.echo(f"    {words_path}")
         else:
             click.echo(f"[-] {name} -> FAILED: {r['error']}")
     succeeded = sum(1 for r in results if r["success"])

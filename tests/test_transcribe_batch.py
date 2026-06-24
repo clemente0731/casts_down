@@ -40,6 +40,7 @@ class TestTranscribeBatch:
         assert results[0]["success"] is True
         assert (tmp_path / "test.srt").exists()
         assert (tmp_path / "test.txt").exists()
+        assert (tmp_path / "test.words.json").exists()
 
     def test_batch_prints_progress_eta(self, tmp_path, capsys):
         a = tmp_path / "a.mp3"
@@ -76,10 +77,55 @@ class TestTranscribeBatch:
         audio.touch()
         (tmp_path / "done.srt").write_text("existing", encoding="utf-8")
         (tmp_path / "done.txt").write_text("existing", encoding="utf-8")
+        (tmp_path / "done.words.json").write_text("{}", encoding="utf-8")
         from casts_down.transcribe import transcribe_batch
         results = transcribe_batch([audio], engine=DummyEngine(), skip_transcribed=True)
         assert results[0]["success"] is True
         assert results[0]["skipped"] is True
+
+    def test_existing_transcript_missing_words_json_is_backfilled_without_transcribing(self, tmp_path):
+        audio = tmp_path / "done.mp3"
+        audio.touch()
+        (tmp_path / "done.srt").write_text("existing", encoding="utf-8")
+        (tmp_path / "done.txt").write_text("[00:00:01] That's safe. Safe!", encoding="utf-8")
+
+        class CountingEngine(TranscribeEngine):
+            def __init__(self):
+                self.calls = 0
+
+            def transcribe(self, audio_path, language=None):
+                self.calls += 1
+                return [Segment(0.0, 1.0, "new")]
+
+        engine = CountingEngine()
+
+        from casts_down.transcribe import transcribe_batch
+        results = transcribe_batch([audio], engine=engine, skip_transcribed=True)
+
+        assert results[0]["success"] is True
+        assert results[0]["skipped"] is True
+        assert engine.calls == 0
+        assert (tmp_path / "done.words.json").exists()
+
+    def test_words_json_backfill_failure_does_not_abort_batch(self, tmp_path):
+        a = tmp_path / "bad.mp3"
+        b = tmp_path / "ok.mp3"
+        a.touch()
+        b.touch()
+        (tmp_path / "bad.srt").write_text("existing", encoding="utf-8")
+        (tmp_path / "bad.txt").write_text("existing", encoding="utf-8")
+
+        from casts_down.transcribe import transcribe_batch
+        from unittest.mock import patch
+
+        with patch("casts_down.transcribe.write_word_stats_from_txt", side_effect=OSError("disk full")):
+            results = transcribe_batch([a, b], engine=DummyEngine(), skip_transcribed=True)
+
+        assert len(results) == 2
+        assert results[0]["success"] is False
+        assert "disk full" in results[0]["error"]
+        assert results[1]["success"] is True
+        assert (tmp_path / "ok.words.json").exists()
 
     def test_re_transcribe_if_only_srt_exists(self, tmp_path):
         audio = tmp_path / "partial.mp3"

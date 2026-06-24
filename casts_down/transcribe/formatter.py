@@ -1,6 +1,7 @@
 """Output formatters for transcription segments."""
 from pathlib import Path
 from casts_down.transcribe.engine import Segment
+from casts_down.transcribe.word_stats import write_word_stats_json
 
 def _format_srt_time(seconds: float) -> str:
     total_ms = int(round(seconds * 1000))
@@ -31,18 +32,22 @@ def format_txt(segments: list[Segment]) -> str:
         return ""
     return "\n".join(f"{_format_txt_time(seg.start)} {seg.text}" for seg in segments)
 
-def write_outputs(audio_path: Path, segments: list[Segment]) -> tuple[Path, Path]:
+def write_outputs(audio_path: Path, segments: list[Segment]) -> tuple[Path, Path, Path]:
     srt_path = audio_path.with_suffix(".srt")
     txt_path = audio_path.with_suffix(".txt")
+    words_path = audio_path.with_suffix(".words.json")
     srt_tmp = srt_path.parent / (srt_path.name + ".tmp")
     txt_tmp = txt_path.parent / (txt_path.name + ".tmp")
     try:
-        srt_tmp.write_text(format_srt(segments), encoding="utf-8")
-        txt_tmp.write_text(format_txt(segments), encoding="utf-8")
+        srt_text = format_srt(segments)
+        txt_text = format_txt(segments)
+        srt_tmp.write_text(srt_text, encoding="utf-8")
+        txt_tmp.write_text(txt_text, encoding="utf-8")
         srt_tmp.rename(srt_path)
         txt_tmp.rename(txt_path)
+        write_word_stats_json(audio_path, txt_text)
     finally:
         for tmp in (srt_tmp, txt_tmp):
             if tmp.exists():
                 tmp.unlink()
-    return srt_path, txt_path
+    return srt_path, txt_path, words_path

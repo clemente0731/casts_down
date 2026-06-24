@@ -44,6 +44,7 @@ lint:
 	python -m py_compile casts_down/transcribe/engine.py
 	python -m py_compile casts_down/transcribe/formatter.py
 	python -m py_compile casts_down/transcribe/installer.py
+	python -m py_compile casts_down/transcribe/word_stats.py
 	@echo "All files compile OK"
 
 build:
