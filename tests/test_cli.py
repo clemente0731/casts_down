@@ -152,6 +152,37 @@ class TestTaskTiming:
         assert "Pipeline:" in result.output
         assert "Total:" in result.output
 
+    @patch("casts_down.pipeline.transcribe_one")
+    @patch("casts_down.cli.detect_engine")
+    @patch("casts_down.cli._download_podcast")
+    def test_download_pipeline_partial_episode_failure_exits_nonzero(
+        self, mock_download, mock_detect_engine, mock_transcribe_one, runner, tmp_path
+    ):
+        good = tmp_path / "good.mp3"
+
+        async def fake_download(**kwargs):
+            good.touch()
+            kwargs["on_file_done"](good, {"title": "good"}, "downloaded good")
+            kwargs["on_file_failed"](tmp_path / "bad.mp3", {"title": "bad"}, "HTTP 403")
+            return [good]
+
+        mock_download.side_effect = fake_download
+        mock_detect_engine.return_value = object()
+        mock_transcribe_one.return_value = {
+            "status": "succeeded",
+            "outputs": [good.with_suffix(".txt")],
+            "error": None,
+            "duration": 0.01,
+        }
+
+        result = runner.invoke(main, ["https://example.com/feed.rss", "--latest", "2"])
+
+        assert result.exit_code == 1
+        assert "RED" in result.output
+        assert "bad" in result.output
+        assert "HTTP 403" in result.output
+        mock_transcribe_one.assert_called_once()
+
 
 class TestMultipleDownloadURLs:
     @patch("casts_down.cli._download_podcast")

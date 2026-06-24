@@ -7,8 +7,10 @@ import asyncio
 import pytest
 
 from casts_down.pipeline import (
+    DownloadJob,
     PipelineItem,
     allocate_pipeline_workers,
+    run_download_jobs_pipeline,
     run_file_pipeline,
 )
 
@@ -397,3 +399,160 @@ async def test_transcription_failure_does_not_stop_later_items(tmp_path, monkeyp
     assert items[0].error == "RuntimeError: transcription exploded"
     assert items[1].download_status == "succeeded"
     assert items[1].transcribe_status == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_download_job_partial_failure_becomes_red_pipeline_item(tmp_path, monkeypatch):
+    async def download_job(download_concurrent, on_file_done, on_file_failed):
+        good_path = tmp_path / "good.mp3"
+        good_path.touch()
+        on_file_done(good_path, {"title": "good"}, "downloaded good")
+        on_file_failed(tmp_path / "bad.mp3", {"title": "bad"}, "HTTP 403")
+
+    def fake_transcribe_one(audio_path, engine, language=None):
+        return {
+            "status": "succeeded",
+            "outputs": [audio_path.with_suffix(".txt")],
+            "error": None,
+            "duration": 0.01,
+        }
+
+    monkeypatch.setattr("casts_down.pipeline.transcribe_one", fake_transcribe_one)
+
+    result = await run_download_jobs_pipeline(
+        [
+            DownloadJob(
+                source_url="https://example.test/feed.rss",
+                download=download_job,
+                selected_count=2,
+            )
+        ],
+        engine_factory=lambda: object(),
+        user_concurrent=3,
+    )
+
+    assert result.failed_count == 1
+    assert [(item.title, item.download_status, item.transcribe_status) for item in result.items] == [
+        ("good", "succeeded", "succeeded"),
+        ("bad", "failed", "skipped"),
+    ]
+    assert result.items[1].error == "HTTP 403"
+
+
+@pytest.mark.asyncio
+async def test_download_job_streams_first_completed_file_before_later_download_finishes(
+    tmp_path, monkeypatch
+):
+    event_log = []
+
+    async def download_job(download_concurrent, on_file_done, on_file_failed):
+        assert download_concurrent == 2
+
+        async def slow_download():
+            event_log.append("download start slow")
+            await asyncio.sleep(0.05)
+            path = tmp_path / "slow.mp3"
+            path.touch()
+            on_file_done(path, {"title": "slow"}, "downloaded slow")
+            event_log.append("download end slow")
+
+        async def fast_download():
+            event_log.append("download start fast")
+            path = tmp_path / "fast.mp3"
+            path.touch()
+            on_file_done(path, {"title": "fast"}, "downloaded fast")
+            event_log.append("download end fast")
+
+        await asyncio.gather(slow_download(), fast_download())
+
+    def fake_transcribe_one(audio_path, engine, language=None):
+        event_log.append(f"transcribe {audio_path.name}")
+        return {
+            "status": "succeeded",
+            "outputs": [audio_path.with_suffix(".txt")],
+            "error": None,
+            "duration": 0.01,
+        }
+
+    monkeypatch.setattr("casts_down.pipeline.transcribe_one", fake_transcribe_one)
+
+    result = await run_download_jobs_pipeline(
+        [
+            DownloadJob(
+                source_url="https://example.test/feed.rss",
+                download=download_job,
+                selected_count=3,
+            )
+        ],
+        engine_factory=lambda: object(),
+        user_concurrent=3,
+    )
+
+    assert result.failed_count == 0
+    assert event_log.index("download end fast") < event_log.index("transcribe fast.mp3")
+    assert event_log.index("transcribe fast.mp3") < event_log.index("download end slow")
+
+
+@pytest.mark.asyncio
+async def test_download_job_concurrency_is_capped_by_selected_count_and_user_budget(tmp_path, monkeypatch):
+    seen_concurrency = []
+
+    async def download_job(download_concurrent, on_file_done, on_file_failed):
+        seen_concurrency.append(download_concurrent)
+        path = tmp_path / "only.mp3"
+        path.touch()
+        on_file_done(path, {"title": "only"}, "downloaded only")
+
+    def fake_transcribe_one(audio_path, engine, language=None):
+        return {
+            "status": "succeeded",
+            "outputs": [audio_path.with_suffix(".txt")],
+            "error": None,
+            "duration": 0.01,
+        }
+
+    monkeypatch.setattr("casts_down.pipeline.transcribe_one", fake_transcribe_one)
+
+    result = await run_download_jobs_pipeline(
+        [
+            DownloadJob(
+                source_url="https://example.test/feed.rss",
+                download=download_job,
+                selected_count=1,
+            )
+        ],
+        engine_factory=lambda: object(),
+        user_concurrent=5,
+    )
+
+    assert result.failed_count == 0
+    assert seen_concurrency == [1]
+
+
+@pytest.mark.asyncio
+async def test_download_job_failure_callback_then_exception_does_not_duplicate_failed_item(tmp_path, monkeypatch):
+    async def download_job(download_concurrent, on_file_done, on_file_failed):
+        on_file_failed(tmp_path / "bad.mp3", {"title": "bad"}, "HTTP 403")
+        raise RuntimeError("HTTP 403")
+
+    def fake_transcribe_one(audio_path, engine, language=None):
+        raise AssertionError("failed downloads should not be transcribed")
+
+    monkeypatch.setattr("casts_down.pipeline.transcribe_one", fake_transcribe_one)
+
+    result = await run_download_jobs_pipeline(
+        [
+            DownloadJob(
+                source_url="https://example.test/episode",
+                download=download_job,
+                selected_count=1,
+            )
+        ],
+        engine_factory=lambda: object(),
+        user_concurrent=3,
+    )
+
+    assert result.failed_count == 1
+    assert len(result.items) == 1
+    assert result.items[0].title == "bad"
+    assert result.items[0].error == "HTTP 403"

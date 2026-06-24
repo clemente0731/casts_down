@@ -26,6 +26,21 @@ def _call_on_file_done(
         tqdm.write(f"[!] on_file_done failed for {path.name}: {type(e).__name__}: {e}")
 
 
+def _call_on_file_failed(
+    callback: Callable[[Path, "PodcastEpisode", str], None] | None,
+    path: Path,
+    episode: "PodcastEpisode",
+    message: str,
+) -> None:
+    if not callback:
+        return
+
+    try:
+        callback(path, episode, message)
+    except Exception as e:
+        tqdm.write(f"[!] on_file_failed failed for {path.name}: {type(e).__name__}: {e}")
+
+
 class PodcastEpisode:
     """播客剧集数据类"""
     def __init__(self, title: str, audio_url: str, published: str = ""):
@@ -120,6 +135,7 @@ class PodcastDownloader:
         output_dir: Path,
         skip_existing: bool = False,
         on_file_done: Callable[[Path, PodcastEpisode, str], None] | None = None,
+        on_file_failed: Callable[[Path, PodcastEpisode, str], None] | None = None,
     ) -> list[Path]:
         """批量下载剧集，返回已下载文件路径列表"""
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -180,6 +196,7 @@ class PodcastDownloader:
                             _call_on_file_done(on_file_done, output_path, episodes[idx], message)
                         else:
                             tqdm.write(f"[-] {message}")
+                            _call_on_file_failed(on_file_failed, path_map[idx], episodes[idx], message)
             finally:
                 byte_pbar.close()
 

@@ -40,6 +40,21 @@ class PipelineResult:
         )
 
 
+@dataclass
+class DownloadJob:
+    source_url: str
+    download: Callable[
+        [
+            int,
+            Callable[[Path, Any, str], None],
+            Callable[[Path | None, Any, str], None],
+        ],
+        Any,
+    ]
+    selected_count: int | None = None
+    title: str | None = None
+
+
 def allocate_pipeline_workers(
     user_concurrent: int,
     selected_count: int,
@@ -54,6 +69,124 @@ def allocate_pipeline_workers(
     if effective == 1:
         return (1, 0)
     return (max(1, effective - 1), 1)
+
+
+async def run_download_jobs_pipeline(
+    jobs: list[DownloadJob],
+    engine_factory: Callable[[], Any],
+    user_concurrent: int,
+    language: str | None = None,
+    progress_callback: Callable[[list[PipelineItem], float], None] | None = None,
+    event_log: list[str] | None = None,
+) -> PipelineResult:
+    started_at = time.monotonic()
+    known_count = sum(job.selected_count or 0 for job in jobs)
+    selected_count = known_count if known_count > 0 else max(1, user_concurrent)
+    download_workers, transcribe_workers = allocate_pipeline_workers(
+        user_concurrent,
+        selected_count,
+        transcribe=True,
+    )
+    if download_workers == 0:
+        return PipelineResult(items=[], elapsed=time.monotonic() - started_at)
+
+    items: list[PipelineItem] = []
+    transcribe_queue: asyncio.Queue[PipelineItem | None] = asyncio.Queue()
+    engine: Any | None = None
+
+    def emit_progress() -> None:
+        if progress_callback is not None:
+            progress_callback(items, time.monotonic() - started_at)
+
+    def add_success_item(job: DownloadJob, path: Path, episode: Any, message: str) -> None:
+        item = PipelineItem(
+            index=len(items) + 1,
+            source_url=job.source_url,
+            title=_episode_title(episode, path, job),
+            audio_path=Path(path),
+            download_status="succeeded",
+            transcribe_status="queued",
+        )
+        items.append(item)
+        transcribe_queue.put_nowait(item)
+        if event_log is not None:
+            event_log.append(f"queued {Path(path).name}")
+        emit_progress()
+
+    def add_failed_item(
+        job: DownloadJob,
+        path: Path | None,
+        episode: Any,
+        message: str,
+    ) -> None:
+        item = PipelineItem(
+            index=len(items) + 1,
+            source_url=job.source_url,
+            title=_episode_title(episode, path, job),
+            audio_path=Path(path) if path is not None else None,
+            download_status="failed",
+            transcribe_status="skipped",
+            error=message,
+        )
+        items.append(item)
+        emit_progress()
+
+    async def transcribe_worker() -> None:
+        nonlocal engine
+        while True:
+            item = await transcribe_queue.get()
+            try:
+                if item is None:
+                    return
+                if engine is None:
+                    engine = await _maybe_to_thread(engine_factory)
+                await _transcribe_item(item, engine, language, event_log)
+                emit_progress()
+            finally:
+                transcribe_queue.task_done()
+
+    transcribe_task = None
+    if transcribe_workers > 0:
+        transcribe_task = asyncio.create_task(transcribe_worker())
+
+    for job in jobs:
+        job_started = time.monotonic()
+        item_count_before_job = len(items)
+
+        def on_file_done(path: Path, episode: Any, message: str, current_job: DownloadJob = job) -> None:
+            add_success_item(current_job, path, episode, message)
+
+        def on_file_failed(
+            path: Path | None,
+            episode: Any,
+            message: str,
+            current_job: DownloadJob = job,
+        ) -> None:
+            add_failed_item(current_job, path, episode, message)
+
+        try:
+            result = job.download(download_workers, on_file_done, on_file_failed)
+            if inspect.isawaitable(result):
+                await result
+        except SystemExit as exc:
+            if len(items) == item_count_before_job:
+                code = exc.code if isinstance(exc.code, int) else 1
+                add_failed_item(job, None, None, f"exited with status {code}")
+        except Exception as exc:
+            if len(items) == item_count_before_job:
+                add_failed_item(job, None, None, f"{type(exc).__name__}: {exc}")
+        finally:
+            for item in items:
+                if item.source_url == job.source_url and item.download_elapsed == 0.0:
+                    item.download_elapsed = time.monotonic() - job_started
+
+    if transcribe_task is None:
+        transcribe_task = asyncio.create_task(transcribe_worker())
+    await transcribe_queue.join()
+    transcribe_queue.put_nowait(None)
+    await transcribe_task
+
+    return PipelineResult(items=items, elapsed=time.monotonic() - started_at)
 
 
 async def run_file_pipeline(
@@ -134,6 +267,25 @@ async def run_file_pipeline(
         await transcribe_task
 
     return PipelineResult(items=items, elapsed=time.monotonic() - started_at)
+
+
+async def _maybe_to_thread(factory: Callable[[], Any]) -> Any:
+    if inspect.iscoroutinefunction(factory):
+        return await factory()
+    result = await asyncio.to_thread(factory)
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
+def _episode_title(episode: Any, path: Path | None, job: DownloadJob) -> str:
+    if isinstance(episode, dict):
+        return str(episode.get("title") or (path.stem if path else job.title or job.source_url))
+    if episode is not None:
+        return str(getattr(episode, "title", path.stem if path else job.title or job.source_url))
+    if path is not None:
+        return path.stem
+    return job.title or job.source_url
 
 
 async def _download_item(

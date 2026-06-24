@@ -37,6 +37,26 @@ def _call_on_file_done(
         _warn_on_file_done_failure(path, e, use_tqdm)
 
 
+def _call_on_file_failed(
+    callback: Callable[[Path, dict, str], None] | None,
+    path: Path,
+    episode: dict,
+    message: str,
+    use_tqdm: bool,
+) -> None:
+    if not callback:
+        return
+
+    try:
+        callback(path, episode, message)
+    except Exception as e:
+        warning = f"[!] on_file_failed failed for {path.name}: {type(e).__name__}: {e}"
+        if use_tqdm:
+            tqdm.write(warning)
+        else:
+            click.echo(warning, err=True)
+
+
 class XiaoyuzhouDownloader:
     """小宇宙下载器"""
 
@@ -197,6 +217,7 @@ class XiaoyuzhouDownloader:
         output_dir: Path,
         skip_existing: bool = False,
         on_file_done: Callable[[Path, dict, str], None] | None = None,
+        on_file_failed: Callable[[Path, dict, str], None] | None = None,
     ) -> list[Path]:
         """下载单个剧集（通过 URL），返回已下载文件路径列表"""
         downloaded_files: list[Path] = []
@@ -257,6 +278,13 @@ class XiaoyuzhouDownloader:
                 )
             else:
                 click.echo(f"[-] {message}", err=True)
+                _call_on_file_failed(
+                    on_file_failed,
+                    output_path,
+                    episode_info,
+                    message,
+                    use_tqdm=False,
+                )
                 raise RuntimeError(message)
 
         return downloaded_files
@@ -268,6 +296,7 @@ class XiaoyuzhouDownloader:
         skip_existing: bool = False,
         latest: int | None = None,
         on_file_done: Callable[[Path, dict, str], None] | None = None,
+        on_file_failed: Callable[[Path, dict, str], None] | None = None,
     ) -> list[Path]:
         """批量下载播客剧集，返回已下载文件路径列表"""
         downloaded_files: list[Path] = []
@@ -352,6 +381,13 @@ class XiaoyuzhouDownloader:
                             )
                         else:
                             tqdm.write(f"[-] {message}")
+                            _call_on_file_failed(
+                                on_file_failed,
+                                output_path,
+                                episodes[idx],
+                                message,
+                                use_tqdm=True,
+                            )
             finally:
                 byte_pbar.close()
 
