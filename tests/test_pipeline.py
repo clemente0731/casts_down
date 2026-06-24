@@ -581,6 +581,75 @@ async def test_download_job_concurrent_one_transcribes_each_file_before_next_dow
 
 
 @pytest.mark.asyncio
+async def test_download_job_engine_factory_failure_does_not_hang_queued_items(tmp_path):
+    async def download_job(download_concurrent, on_file_done, on_file_failed):
+        for name in ("one", "two"):
+            path = tmp_path / f"{name}.mp3"
+            path.touch()
+            on_file_done(path, {"title": name}, f"downloaded {name}")
+
+    def broken_engine_factory():
+        raise RuntimeError("engine missing")
+
+    result = await asyncio.wait_for(
+        run_download_jobs_pipeline(
+            [
+                DownloadJob(
+                    source_url="https://example.test/feed.rss",
+                    download=download_job,
+                    selected_count=2,
+                )
+            ],
+            engine_factory=broken_engine_factory,
+            user_concurrent=2,
+        ),
+        timeout=1,
+    )
+
+    assert result.failed_count == 2
+    assert [item.transcribe_status for item in result.items] == ["failed", "failed"]
+    assert all("engine missing" in (item.error or "") for item in result.items)
+
+
+@pytest.mark.asyncio
+async def test_download_job_success_then_unexpected_exception_adds_failed_item(tmp_path, monkeypatch):
+    async def download_job(download_concurrent, on_file_done, on_file_failed):
+        path = tmp_path / "good.mp3"
+        path.touch()
+        on_file_done(path, {"title": "good"}, "downloaded good")
+        raise RuntimeError("feed aborted")
+
+    def fake_transcribe_one(audio_path, engine, language=None):
+        return {
+            "status": "succeeded",
+            "outputs": [audio_path.with_suffix(".txt")],
+            "error": None,
+            "duration": 0.01,
+        }
+
+    monkeypatch.setattr("casts_down.pipeline.transcribe_one", fake_transcribe_one)
+
+    result = await run_download_jobs_pipeline(
+        [
+            DownloadJob(
+                source_url="https://example.test/feed.rss",
+                download=download_job,
+                selected_count=2,
+            )
+        ],
+        engine_factory=lambda: object(),
+        user_concurrent=2,
+    )
+
+    assert result.failed_count == 1
+    assert [(item.title, item.download_status, item.transcribe_status) for item in result.items] == [
+        ("good", "succeeded", "succeeded"),
+        ("https://example.test/feed.rss", "failed", "skipped"),
+    ]
+    assert result.items[1].error == "RuntimeError: feed aborted"
+
+
+@pytest.mark.asyncio
 async def test_download_job_failure_callback_then_exception_does_not_duplicate_failed_item(tmp_path, monkeypatch):
     async def download_job(download_concurrent, on_file_done, on_file_failed):
         on_file_failed(tmp_path / "bad.mp3", {"title": "bad"}, "HTTP 403")

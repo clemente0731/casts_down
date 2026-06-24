@@ -93,6 +93,7 @@ async def run_download_jobs_pipeline(
     items: list[PipelineItem] = []
     transcribe_queue: asyncio.Queue[PipelineItem | None] = asyncio.Queue()
     engine: Any | None = None
+    engine_error: str | None = None
 
     def get_engine_sync() -> Any:
         nonlocal engine
@@ -115,7 +116,11 @@ async def run_download_jobs_pipeline(
         )
         items.append(item)
         if transcribe_workers > 0:
-            transcribe_queue.put_nowait(item)
+            if engine_error is None:
+                transcribe_queue.put_nowait(item)
+            else:
+                item.transcribe_status = "failed"
+                item.error = engine_error
         if event_log is not None:
             event_log.append(f"queued {Path(path).name}")
         emit_progress()
@@ -148,14 +153,22 @@ async def run_download_jobs_pipeline(
         emit_progress()
 
     async def transcribe_worker() -> None:
-        nonlocal engine
+        nonlocal engine, engine_error
         while True:
             item = await transcribe_queue.get()
             try:
                 if item is None:
                     return
                 if engine is None:
-                    engine = await _maybe_to_thread(engine_factory)
+                    try:
+                        engine = await _maybe_to_thread(engine_factory)
+                    except Exception as exc:
+                        engine_error = f"{type(exc).__name__}: {exc}"
+                        item.transcribe_status = "failed"
+                        item.error = engine_error
+                        _fail_pending_transcriptions(transcribe_queue, engine_error)
+                        emit_progress()
+                        return
                 await _transcribe_item(item, engine, language, event_log)
                 emit_progress()
             finally:
@@ -185,11 +198,11 @@ async def run_download_jobs_pipeline(
             if inspect.isawaitable(result):
                 await result
         except SystemExit as exc:
-            if len(items) == item_count_before_job:
+            if not _job_emitted_download_failure(items[item_count_before_job:]):
                 code = exc.code if isinstance(exc.code, int) else 1
                 add_failed_item(job, None, None, f"exited with status {code}")
         except Exception as exc:
-            if len(items) == item_count_before_job:
+            if not _job_emitted_download_failure(items[item_count_before_job:]):
                 add_failed_item(job, None, None, f"{type(exc).__name__}: {exc}")
         finally:
             for item in items:
@@ -200,7 +213,8 @@ async def run_download_jobs_pipeline(
         transcribe_task = asyncio.create_task(transcribe_worker())
     if transcribe_task is not None:
         await transcribe_queue.join()
-        transcribe_queue.put_nowait(None)
+        if not transcribe_task.done():
+            transcribe_queue.put_nowait(None)
         await transcribe_task
 
     return PipelineResult(items=items, elapsed=time.monotonic() - started_at)
@@ -293,6 +307,27 @@ async def _maybe_to_thread(factory: Callable[[], Any]) -> Any:
     if inspect.isawaitable(result):
         return await result
     return result
+
+
+def _fail_pending_transcriptions(
+    queue: asyncio.Queue[PipelineItem | None],
+    error: str,
+) -> None:
+    while True:
+        try:
+            item = queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return
+        try:
+            if item is not None:
+                item.transcribe_status = "failed"
+                item.error = error
+        finally:
+            queue.task_done()
+
+
+def _job_emitted_download_failure(items: list[PipelineItem]) -> bool:
+    return any(item.download_status == "failed" for item in items)
 
 
 def _episode_title(episode: Any, path: Path | None, job: DownloadJob) -> str:
