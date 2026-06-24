@@ -340,6 +340,23 @@ class XiaoyuzhouDownloader:
                     session, audio_url, path, skip_existing,
                     progress_callback=_report_byte_progress,
                 )
+                success, message = result
+                if success:
+                    _call_on_file_done(
+                        on_file_done,
+                        path,
+                        episodes[idx],
+                        message,
+                        use_tqdm=True,
+                    )
+                else:
+                    _call_on_file_failed(
+                        on_file_failed,
+                        path,
+                        episodes[idx],
+                        message,
+                        use_tqdm=True,
+                    )
                 return idx, result
 
             try:
@@ -372,22 +389,8 @@ class XiaoyuzhouDownloader:
                             tqdm.write(f"[+] {message}")
                             output_path = path_map[idx]
                             downloaded_files.append(output_path)
-                            _call_on_file_done(
-                                on_file_done,
-                                output_path,
-                                episodes[idx],
-                                message,
-                                use_tqdm=True,
-                            )
                         else:
                             tqdm.write(f"[-] {message}")
-                            _call_on_file_failed(
-                                on_file_failed,
-                                output_path,
-                                episodes[idx],
-                                message,
-                                use_tqdm=True,
-                            )
             finally:
                 byte_pbar.close()
 

@@ -165,6 +165,11 @@ class PodcastDownloader:
                     session, episode, path, skip_existing,
                     progress_callback=_report_byte_progress,
                 )
+                success, message = result
+                if success:
+                    _call_on_file_done(on_file_done, path, episode, message)
+                else:
+                    _call_on_file_failed(on_file_failed, path, episode, message)
                 return idx, result
 
             try:
@@ -193,10 +198,8 @@ class PodcastDownloader:
                             tqdm.write(f"[+] {message}")
                             output_path = path_map[idx]
                             downloaded_files.append(output_path)
-                            _call_on_file_done(on_file_done, output_path, episodes[idx], message)
                         else:
                             tqdm.write(f"[-] {message}")
-                            _call_on_file_failed(on_file_failed, path_map[idx], episodes[idx], message)
             finally:
                 byte_pbar.close()
 

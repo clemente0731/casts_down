@@ -533,6 +533,47 @@ class TestDownloadAll:
         assert "RuntimeError: failure callback broke" in warning_output
 
     @pytest.mark.asyncio
+    async def test_concurrent_one_callback_runs_before_next_download_starts(self, tmp_path):
+        """download_all keeps callback work inside the per-download task for concurrency=1."""
+        from casts_down.downloaders.base import PodcastDownloader, PodcastEpisode
+
+        episodes = [
+            PodcastEpisode(title="One", audio_url="https://example.com/one.mp3"),
+            PodcastEpisode(title="Two", audio_url="https://example.com/two.mp3"),
+        ]
+        dl = PodcastDownloader(concurrent=1)
+        event_log = []
+
+        async def fake_download(session, ep, path, skip, progress_callback=None):
+            async with dl.semaphore:
+                event_log.append(f"download start {ep.title}")
+                await asyncio.sleep(0)
+                path.write_bytes(ep.title.encode())
+                return True, f"Done: {path.name}"
+
+        def on_file_done(path, ep, message):
+            event_log.append(f"callback {ep.title}")
+
+        dl.download_episode = fake_download
+
+        with patch("casts_down.downloaders.base.aiohttp.ClientSession") as mock_cs:
+            mock_cs.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+            mock_cs.return_value.__aexit__ = AsyncMock(return_value=False)
+            files = await dl.download_all(
+                episodes,
+                "Podcast",
+                tmp_path,
+                on_file_done=on_file_done,
+            )
+
+        assert sorted(path.name for path in files) == [
+            "podcast--one.mp3",
+            "podcast--two.mp3",
+        ]
+        assert event_log.index("download start One") < event_log.index("callback One")
+        assert event_log.index("callback One") < event_log.index("download start Two")
+
+    @pytest.mark.asyncio
     async def test_callback_error_does_not_abort_remaining_downloads(self, tmp_path, capsys):
         """download_all keeps successful downloads when on_file_done raises."""
         from casts_down.downloaders.base import PodcastDownloader, PodcastEpisode
