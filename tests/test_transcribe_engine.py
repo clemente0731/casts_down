@@ -28,45 +28,41 @@ class TestTranscribeEngineABC:
 
 class TestDetectEngine:
     def test_mac_arm64_prefers_mlx(self):
-        with patch("casts_down.transcribe.platform") as mock_platform:
-            mock_platform.system.return_value = "Darwin"
-            mock_platform.machine.return_value = "arm64"
-            mock_mlx = MagicMock()
-            with patch.dict("sys.modules", {"mlx_whisper": mock_mlx}):
-                import casts_down.transcribe as t
-                importlib.reload(t)
+        mock_mlx = MagicMock()
+        with patch.dict("sys.modules", {"mlx_whisper": mock_mlx}):
+            import casts_down.transcribe as t
+            t = importlib.reload(t)
+            with patch.object(t.platform, "system", return_value="Darwin"), \
+                 patch.object(t.platform, "machine", return_value="arm64"):
                 engine = t.detect_engine(model="small")
                 assert type(engine).__name__ == "MLXWhisperEngine"
 
     def test_mac_arm64_falls_back_to_faster_whisper(self):
-        with patch("casts_down.transcribe.platform") as mock_platform:
-            mock_platform.system.return_value = "Darwin"
-            mock_platform.machine.return_value = "arm64"
-            mock_fw = MagicMock()
-            with patch.dict("sys.modules", {"mlx_whisper": None, "faster_whisper": mock_fw}):
-                import casts_down.transcribe as t
-                importlib.reload(t)
+        mock_fw = MagicMock()
+        with patch.dict("sys.modules", {"mlx_whisper": None, "faster_whisper": mock_fw}):
+            import casts_down.transcribe as t
+            t = importlib.reload(t)
+            with patch.object(t.platform, "system", return_value="Darwin"), \
+                 patch.object(t.platform, "machine", return_value="arm64"):
                 engine = t.detect_engine(model="small")
                 assert type(engine).__name__ == "FasterWhisperEngine"
 
     def test_linux_uses_faster_whisper(self):
-        with patch("casts_down.transcribe.platform") as mock_platform:
-            mock_platform.system.return_value = "Linux"
-            mock_platform.machine.return_value = "x86_64"
-            mock_fw = MagicMock()
-            with patch.dict("sys.modules", {"faster_whisper": mock_fw, "mlx_whisper": None}):
-                import casts_down.transcribe as t
-                importlib.reload(t)
+        mock_fw = MagicMock()
+        with patch.dict("sys.modules", {"faster_whisper": mock_fw, "mlx_whisper": None}):
+            import casts_down.transcribe as t
+            t = importlib.reload(t)
+            with patch.object(t.platform, "system", return_value="Linux"), \
+                 patch.object(t.platform, "machine", return_value="x86_64"):
                 engine = t.detect_engine(model="small")
                 assert type(engine).__name__ == "FasterWhisperEngine"
 
     def test_no_engine_raises_error(self):
-        with patch("casts_down.transcribe.platform") as mock_platform:
-            mock_platform.system.return_value = "Linux"
-            mock_platform.machine.return_value = "x86_64"
-            with patch.dict("sys.modules", {"faster_whisper": None, "mlx_whisper": None}):
-                import casts_down.transcribe as t
-                importlib.reload(t)
+        with patch.dict("sys.modules", {"faster_whisper": None, "mlx_whisper": None}):
+            import casts_down.transcribe as t
+            t = importlib.reload(t)
+            with patch.object(t.platform, "system", return_value="Linux"), \
+                 patch.object(t.platform, "machine", return_value="x86_64"):
                 with pytest.raises(RuntimeError, match="setup-transcribe"):
                     t.detect_engine(model="small")
 
