@@ -112,7 +112,7 @@ release/
 
 ### Automated (GitHub Actions)
 
-Push a version tag to trigger automatic PyPI publish + GitHub Release:
+Push a version tag to trigger package build + GitHub Release:
 
 ```bash
 # Update version in casts_down/__init__.py and pyproject.toml
@@ -124,8 +124,7 @@ git push origin vX.Y.Z
 GitHub Actions will:
 1. Build the Python package
 2. Check with `twine check`
-3. Publish to PyPI (trusted publishing)
-4. Create a GitHub Release with artifacts
+3. Create a GitHub Release with artifacts
 
 ### Manual
 
