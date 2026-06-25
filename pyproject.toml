@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "casts_down"
-version = "2.3.5"
+version = "2.4.0"
 description = "Cross-platform CLI for downloading and transcribing podcasts with local Whisper speech-to-text"
 readme = "README.md"
 requires-python = ">=3.10"
