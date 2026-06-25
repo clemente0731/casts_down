@@ -154,6 +154,33 @@ Download options can appear before or after the URL. Invalid combinations fail b
 | `--transcribe/--no-transcribe` | `-t` | Transcribe after download | **on** |
 | `--model NAME` | `-m` | Whisper model for transcription | `small` |
 
+#### Download and transcription flow
+
+```mermaid
+flowchart TD
+  CLI["casts-down URL"] --> Detect["Detect downloader"]
+  Detect --> Download["Download selected episodes"]
+  Download --> Success["on_file_done"]
+  Download --> Failure["on_file_failed"]
+
+  Success --> Queue["Pipeline queue"]
+  Failure --> Red["Red failed task"]
+
+  Queue --> Budget{"Effective --concurrent"}
+  Budget -->|1| Inline["Download one -> transcribe one"]
+  Budget -->|> 1| Worker["One transcription worker"]
+
+  Inline --> Outputs["SRT / TXT / words JSON"]
+  Worker --> Outputs
+
+  Outputs --> Progress["Overall + task progress tables"]
+  Red --> Progress
+  Progress --> Report["Final timing + green/yellow/red report"]
+  Report --> Exit{"failed_count"}
+  Exit -->|0| OK["exit 0"]
+  Exit -->|> 0| Error["exit 1"]
+```
+
 ### Transcribe
 
 ```bash
