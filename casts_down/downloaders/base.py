@@ -11,6 +11,36 @@ from tqdm import tqdm
 from casts_down.downloaders.naming import build_media_filename, dedupe_filename
 
 
+def _call_on_file_done(
+    callback: Callable[[Path, "PodcastEpisode", str], None] | None,
+    path: Path,
+    episode: "PodcastEpisode",
+    message: str,
+) -> None:
+    if not callback:
+        return
+
+    try:
+        callback(path, episode, message)
+    except Exception as e:
+        tqdm.write(f"[!] on_file_done failed for {path.name}: {type(e).__name__}: {e}")
+
+
+def _call_on_file_failed(
+    callback: Callable[[Path, "PodcastEpisode", str], None] | None,
+    path: Path,
+    episode: "PodcastEpisode",
+    message: str,
+) -> None:
+    if not callback:
+        return
+
+    try:
+        callback(path, episode, message)
+    except Exception as e:
+        tqdm.write(f"[!] on_file_failed failed for {path.name}: {type(e).__name__}: {e}")
+
+
 class PodcastEpisode:
     """播客剧集数据类"""
     def __init__(self, title: str, audio_url: str, published: str = ""):
@@ -103,7 +133,9 @@ class PodcastDownloader:
         episodes: list[PodcastEpisode],
         podcast_name: str,
         output_dir: Path,
-        skip_existing: bool = False
+        skip_existing: bool = False,
+        on_file_done: Callable[[Path, PodcastEpisode, str], None] | None = None,
+        on_file_failed: Callable[[Path, PodcastEpisode, str], None] | None = None,
     ) -> list[Path]:
         """批量下载剧集，返回已下载文件路径列表"""
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -133,6 +165,11 @@ class PodcastDownloader:
                     session, episode, path, skip_existing,
                     progress_callback=_report_byte_progress,
                 )
+                success, message = result
+                if success:
+                    _call_on_file_done(on_file_done, path, episode, message)
+                else:
+                    _call_on_file_failed(on_file_failed, path, episode, message)
                 return idx, result
 
             try:
@@ -159,7 +196,8 @@ class PodcastDownloader:
                         success, message = result
                         if success:
                             tqdm.write(f"[+] {message}")
-                            downloaded_files.append(path_map[idx])
+                            output_path = path_map[idx]
+                            downloaded_files.append(output_path)
                         else:
                             tqdm.write(f"[-] {message}")
             finally:

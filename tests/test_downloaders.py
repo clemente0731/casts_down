@@ -419,6 +419,205 @@ class TestDownloadAll:
         assert len(files) == 1
         assert "good" in files[0].name
 
+    @pytest.mark.asyncio
+    async def test_callback_runs_after_successful_file_exists(self, tmp_path):
+        """download_all calls on_file_done only after the final file exists."""
+        from casts_down.downloaders.base import PodcastDownloader, PodcastEpisode
+
+        episode = PodcastEpisode(title="Done", audio_url="https://example.com/done.mp3")
+        dl = PodcastDownloader(concurrent=1)
+        callback_events = []
+
+        class FakeContent:
+            async def iter_chunked(self, chunk_size):
+                yield b"data"
+
+        class FakeResponse:
+            headers = {"content-length": "4"}
+            content = FakeContent()
+
+            def raise_for_status(self):
+                return None
+
+        class FakeContext:
+            async def __aenter__(self):
+                return FakeResponse()
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeSession:
+            def get(self, *args, **kwargs):
+                return FakeContext()
+
+        def on_file_done(path, ep, message):
+            callback_events.append((path, ep, message, path.exists(), path.read_bytes()))
+
+        with patch("casts_down.downloaders.base.aiohttp.ClientSession") as mock_cs:
+            mock_cs.return_value.__aenter__ = AsyncMock(return_value=FakeSession())
+            mock_cs.return_value.__aexit__ = AsyncMock(return_value=False)
+            files = await dl.download_all(
+                [episode],
+                "Podcast",
+                tmp_path,
+                on_file_done=on_file_done,
+            )
+
+        assert files == [tmp_path / "podcast--done.mp3"]
+        assert callback_events == [
+            (tmp_path / "podcast--done.mp3", episode, "完成: podcast--done.mp3 (0.0 MB)", True, b"data")
+        ]
+
+    @pytest.mark.asyncio
+    async def test_callback_not_called_for_failed_download(self, tmp_path):
+        """download_all does not call on_file_done for failed downloads."""
+        from casts_down.downloaders.base import PodcastDownloader, PodcastEpisode
+
+        episode = PodcastEpisode(title="Fail", audio_url="https://example.com/fail.mp3")
+        dl = PodcastDownloader(concurrent=1)
+        callback_events = []
+
+        async def fake_download(session, ep, path, skip, progress_callback=None):
+            return False, f"Failed: {ep.title}"
+
+        dl.download_episode = fake_download
+
+        with patch("casts_down.downloaders.base.aiohttp.ClientSession") as mock_cs:
+            mock_cs.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+            mock_cs.return_value.__aexit__ = AsyncMock(return_value=False)
+            files = await dl.download_all(
+                [episode],
+                "Podcast",
+                tmp_path,
+                on_file_done=lambda *args: callback_events.append(args),
+            )
+
+        assert files == []
+        assert callback_events == []
+
+    @pytest.mark.asyncio
+    async def test_failure_callback_runs_for_failed_download_and_is_isolated(self, tmp_path, capsys):
+        """download_all calls on_file_failed for failed downloads and isolates callback errors."""
+        from casts_down.downloaders.base import PodcastDownloader, PodcastEpisode
+
+        episode = PodcastEpisode(title="Fail", audio_url="https://example.com/fail.mp3")
+        dl = PodcastDownloader(concurrent=1)
+        failure_events = []
+
+        async def fake_download(session, ep, path, skip, progress_callback=None):
+            return False, f"Failed: {ep.title}"
+
+        def on_file_failed(path, ep, message):
+            failure_events.append((path, ep, message))
+            raise RuntimeError("failure callback broke")
+
+        dl.download_episode = fake_download
+
+        with patch("casts_down.downloaders.base.aiohttp.ClientSession") as mock_cs:
+            mock_cs.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+            mock_cs.return_value.__aexit__ = AsyncMock(return_value=False)
+            files = await dl.download_all(
+                [episode],
+                "Podcast",
+                tmp_path,
+                on_file_failed=on_file_failed,
+            )
+
+        assert files == []
+        assert failure_events == [
+            (tmp_path / "podcast--fail.mp3", episode, "Failed: Fail")
+        ]
+        captured = capsys.readouterr()
+        warning_output = captured.out + captured.err
+        assert "[!] on_file_failed failed for podcast--fail.mp3" in warning_output
+        assert "RuntimeError: failure callback broke" in warning_output
+
+    @pytest.mark.asyncio
+    async def test_concurrent_one_callback_runs_before_next_download_starts(self, tmp_path):
+        """download_all keeps callback work inside the per-download task for concurrency=1."""
+        from casts_down.downloaders.base import PodcastDownloader, PodcastEpisode
+
+        episodes = [
+            PodcastEpisode(title="One", audio_url="https://example.com/one.mp3"),
+            PodcastEpisode(title="Two", audio_url="https://example.com/two.mp3"),
+        ]
+        dl = PodcastDownloader(concurrent=1)
+        event_log = []
+
+        async def fake_download(session, ep, path, skip, progress_callback=None):
+            async with dl.semaphore:
+                event_log.append(f"download start {ep.title}")
+                await asyncio.sleep(0)
+                path.write_bytes(ep.title.encode())
+                return True, f"Done: {path.name}"
+
+        def on_file_done(path, ep, message):
+            event_log.append(f"callback {ep.title}")
+
+        dl.download_episode = fake_download
+
+        with patch("casts_down.downloaders.base.aiohttp.ClientSession") as mock_cs:
+            mock_cs.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+            mock_cs.return_value.__aexit__ = AsyncMock(return_value=False)
+            files = await dl.download_all(
+                episodes,
+                "Podcast",
+                tmp_path,
+                on_file_done=on_file_done,
+            )
+
+        assert sorted(path.name for path in files) == [
+            "podcast--one.mp3",
+            "podcast--two.mp3",
+        ]
+        assert event_log.index("download start One") < event_log.index("callback One")
+        assert event_log.index("callback One") < event_log.index("download start Two")
+
+    @pytest.mark.asyncio
+    async def test_callback_error_does_not_abort_remaining_downloads(self, tmp_path, capsys):
+        """download_all keeps successful downloads when on_file_done raises."""
+        from casts_down.downloaders.base import PodcastDownloader, PodcastEpisode
+
+        episodes = [
+            PodcastEpisode(title="One", audio_url="https://example.com/one.mp3"),
+            PodcastEpisode(title="Two", audio_url="https://example.com/two.mp3"),
+        ]
+        dl = PodcastDownloader(concurrent=2)
+        callback_paths = []
+
+        async def fake_download(session, ep, path, skip, progress_callback=None):
+            path.write_bytes(ep.title.encode())
+            return True, f"Done: {path.name}"
+
+        def on_file_done(path, ep, message):
+            callback_paths.append(path)
+            raise RuntimeError(f"callback broke for {ep.title}")
+
+        dl.download_episode = fake_download
+
+        with patch("casts_down.downloaders.base.aiohttp.ClientSession") as mock_cs:
+            mock_cs.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+            mock_cs.return_value.__aexit__ = AsyncMock(return_value=False)
+            files = await dl.download_all(
+                episodes,
+                "Podcast",
+                tmp_path,
+                on_file_done=on_file_done,
+            )
+
+        assert sorted(path.name for path in files) == [
+            "podcast--one.mp3",
+            "podcast--two.mp3",
+        ]
+        assert sorted(path.name for path in callback_paths) == [
+            "podcast--one.mp3",
+            "podcast--two.mp3",
+        ]
+        captured = capsys.readouterr()
+        warning_output = captured.out + captured.err
+        assert "[!] on_file_done failed for" in warning_output
+        assert "RuntimeError: callback broke" in warning_output
+
 
 # ---------------------------------------------------------------------------
 # Dry-run integration tests — exercise real code paths, no large downloads
@@ -689,6 +888,264 @@ class TestDryRunXiaoyuzhouParser:
             "my-podcast--ep-2.m4a",
             "my-podcast--ep.m4a",
         ]
+
+    @pytest.mark.asyncio
+    async def test_podcast_download_callback_runs_after_successful_file_exists(self, tmp_path):
+        from casts_down.downloaders.xiaoyuzhou import XiaoyuzhouDownloader
+
+        dl = XiaoyuzhouDownloader()
+        episode = {
+            "title": "Ep One",
+            "enclosure": {"url": "https://example.com/audio.m4a"},
+        }
+        callback_events = []
+
+        async def fake_get_podcast_episodes(session, podcast_url):
+            return "My Podcast", [episode]
+
+        async def fake_download_audio(session, audio_url, output_path, skip_existing, progress_callback=None):
+            output_path.write_bytes(b"data")
+            return True, f"Completed: {output_path.name}"
+
+        def on_file_done(path, ep, message):
+            callback_events.append((path, ep, message, path.exists(), path.read_bytes()))
+
+        dl.get_podcast_episodes = fake_get_podcast_episodes
+        dl.download_audio = fake_download_audio
+
+        files = await dl.download_podcast(
+            "https://www.xiaoyuzhoufm.com/podcast/abc",
+            tmp_path,
+            on_file_done=on_file_done,
+        )
+
+        assert files == [tmp_path / "my-podcast--ep-one.m4a"]
+        assert callback_events == [
+            (
+                tmp_path / "my-podcast--ep-one.m4a",
+                episode,
+                "Completed: my-podcast--ep-one.m4a",
+                True,
+                b"data",
+            )
+        ]
+
+    @pytest.mark.asyncio
+    async def test_podcast_download_callback_error_keeps_successes(self, tmp_path, capsys):
+        from casts_down.downloaders.xiaoyuzhou import XiaoyuzhouDownloader
+
+        dl = XiaoyuzhouDownloader()
+        episodes = [
+            {"title": "Ep One", "enclosure": {"url": "https://example.com/one.m4a"}},
+            {"title": "Ep Two", "enclosure": {"url": "https://example.com/two.m4a"}},
+        ]
+
+        async def fake_get_podcast_episodes(session, podcast_url):
+            return "My Podcast", episodes
+
+        async def fake_download_audio(session, audio_url, output_path, skip_existing, progress_callback=None):
+            output_path.write_bytes(audio_url.encode())
+            return True, f"Completed: {output_path.name}"
+
+        def on_file_done(path, ep, message):
+            raise ValueError(f"callback broke for {ep['title']}")
+
+        dl.get_podcast_episodes = fake_get_podcast_episodes
+        dl.download_audio = fake_download_audio
+
+        files = await dl.download_podcast(
+            "https://www.xiaoyuzhoufm.com/podcast/abc",
+            tmp_path,
+            on_file_done=on_file_done,
+        )
+
+        assert sorted(path.name for path in files) == [
+            "my-podcast--ep-one.m4a",
+            "my-podcast--ep-two.m4a",
+        ]
+        captured = capsys.readouterr()
+        warning_output = captured.out + captured.err
+        assert "[!] on_file_done failed for" in warning_output
+        assert "ValueError: callback broke" in warning_output
+
+    @pytest.mark.asyncio
+    async def test_podcast_download_does_not_call_callback_on_failure(self, tmp_path):
+        from casts_down.downloaders.xiaoyuzhou import XiaoyuzhouDownloader
+
+        dl = XiaoyuzhouDownloader()
+        callback_events = []
+
+        async def fake_get_podcast_episodes(session, podcast_url):
+            return "My Podcast", [
+                {"title": "Ep One", "enclosure": {"url": "https://example.com/one.m4a"}},
+            ]
+
+        async def fake_download_audio(session, audio_url, output_path, skip_existing, progress_callback=None):
+            return False, "HTTP 403"
+
+        dl.get_podcast_episodes = fake_get_podcast_episodes
+        dl.download_audio = fake_download_audio
+
+        files = await dl.download_podcast(
+            "https://www.xiaoyuzhoufm.com/podcast/abc",
+            tmp_path,
+            on_file_done=lambda *args: callback_events.append(args),
+        )
+
+        assert files == []
+        assert callback_events == []
+
+    @pytest.mark.asyncio
+    async def test_podcast_download_failure_callback_receives_failure_and_is_isolated(self, tmp_path, capsys):
+        from casts_down.downloaders.xiaoyuzhou import XiaoyuzhouDownloader
+
+        dl = XiaoyuzhouDownloader()
+        failure_events = []
+
+        async def fake_get_podcast_episodes(session, podcast_url):
+            return "My Podcast", [
+                {"title": "Ep One", "enclosure": {"url": "https://example.com/one.m4a"}},
+            ]
+
+        async def fake_download_audio(session, audio_url, output_path, skip_existing, progress_callback=None):
+            return False, "HTTP 403"
+
+        def on_file_failed(path, ep, message):
+            failure_events.append((path, ep, message))
+            raise ValueError("failure callback broke")
+
+        dl.get_podcast_episodes = fake_get_podcast_episodes
+        dl.download_audio = fake_download_audio
+
+        files = await dl.download_podcast(
+            "https://www.xiaoyuzhoufm.com/podcast/abc",
+            tmp_path,
+            on_file_failed=on_file_failed,
+        )
+
+        assert files == []
+        assert failure_events == [
+            (
+                tmp_path / "my-podcast--ep-one.m4a",
+                {"title": "Ep One", "enclosure": {"url": "https://example.com/one.m4a"}},
+                "HTTP 403",
+            )
+        ]
+        captured = capsys.readouterr()
+        warning_output = captured.out + captured.err
+        assert "[!] on_file_failed failed for my-podcast--ep-one.m4a" in warning_output
+        assert "ValueError: failure callback broke" in warning_output
+
+    @pytest.mark.asyncio
+    async def test_episode_download_callback_receives_success_message(self, tmp_path):
+        from casts_down.downloaders.xiaoyuzhou import XiaoyuzhouDownloader
+
+        dl = XiaoyuzhouDownloader()
+        episode_info = {
+            "eid": "abc",
+            "title": "Ep One",
+            "audio_url": "https://example.com/audio.m4a",
+            "duration": 123,
+            "description": "",
+            "pubDate": "",
+        }
+        callback_events = []
+
+        async def fake_get_episode_info(session, episode_url):
+            return episode_info
+
+        async def fake_download_audio(session, audio_url, output_path, skip_existing, progress_callback=None):
+            output_path.write_bytes(b"data")
+            return True, f"Completed: {output_path.name}"
+
+        def on_file_done(path, ep, message):
+            callback_events.append((path, ep, message, path.exists(), path.read_bytes()))
+
+        dl.get_episode_info = fake_get_episode_info
+        dl.download_audio = fake_download_audio
+
+        files = await dl.download_episode_by_url(
+            "https://www.xiaoyuzhoufm.com/episode/abc",
+            tmp_path,
+            on_file_done=on_file_done,
+        )
+
+        assert files == [tmp_path / "ep-one.m4a"]
+        assert callback_events == [
+            (tmp_path / "ep-one.m4a", episode_info, "Completed: ep-one.m4a", True, b"data")
+        ]
+
+    @pytest.mark.asyncio
+    async def test_episode_download_callback_error_keeps_success(self, tmp_path, capsys):
+        from casts_down.downloaders.xiaoyuzhou import XiaoyuzhouDownloader
+
+        dl = XiaoyuzhouDownloader()
+        episode_info = {
+            "eid": "abc",
+            "title": "Ep One",
+            "audio_url": "https://example.com/audio.m4a",
+            "duration": 123,
+            "description": "",
+            "pubDate": "",
+        }
+
+        async def fake_get_episode_info(session, episode_url):
+            return episode_info
+
+        async def fake_download_audio(session, audio_url, output_path, skip_existing, progress_callback=None):
+            output_path.write_bytes(b"data")
+            return True, f"Completed: {output_path.name}"
+
+        def on_file_done(path, ep, message):
+            raise LookupError("callback broke")
+
+        dl.get_episode_info = fake_get_episode_info
+        dl.download_audio = fake_download_audio
+
+        files = await dl.download_episode_by_url(
+            "https://www.xiaoyuzhoufm.com/episode/abc",
+            tmp_path,
+            on_file_done=on_file_done,
+        )
+
+        assert files == [tmp_path / "ep-one.m4a"]
+        captured = capsys.readouterr()
+        warning_output = captured.out + captured.err
+        assert "[!] on_file_done failed for ep-one.m4a" in warning_output
+        assert "LookupError: callback broke" in warning_output
+
+    @pytest.mark.asyncio
+    async def test_episode_download_does_not_call_callback_on_failure(self, tmp_path):
+        from casts_down.downloaders.xiaoyuzhou import XiaoyuzhouDownloader
+
+        dl = XiaoyuzhouDownloader()
+        callback_events = []
+        episode_info = {
+            "eid": "abc",
+            "title": "Ep One",
+            "audio_url": "https://example.com/audio.m4a",
+            "duration": 123,
+            "description": "",
+            "pubDate": "",
+        }
+
+        async def fake_get_episode_info(session, episode_url):
+            return episode_info
+
+        async def fake_download_audio(session, audio_url, output_path, skip_existing, progress_callback=None):
+            return False, "HTTP 403"
+
+        dl.get_episode_info = fake_get_episode_info
+        dl.download_audio = fake_download_audio
+
+        with pytest.raises(RuntimeError, match="HTTP 403"):
+            await dl.download_episode_by_url(
+                "https://www.xiaoyuzhoufm.com/episode/abc",
+                tmp_path,
+                on_file_done=lambda *args: callback_events.append(args),
+            )
+
+        assert callback_events == []
 
 
 class TestDryRunTranscriptionPipeline:

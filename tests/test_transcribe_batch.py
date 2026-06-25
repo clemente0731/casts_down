@@ -12,6 +12,73 @@ class FailingEngine(TranscribeEngine):
     def transcribe(self, audio_path, language=None):
         raise RuntimeError("Simulated OOM")
 
+class TestTranscribeOne:
+    def test_writes_all_outputs_and_returns_outputs_list(self, tmp_path):
+        audio = tmp_path / "test.mp3"
+        audio.touch()
+
+        from casts_down.transcribe import transcribe_one
+
+        result = transcribe_one(audio, engine=DummyEngine())
+
+        expected_outputs = [
+            (tmp_path / "test.srt").resolve(),
+            (tmp_path / "test.txt").resolve(),
+            (tmp_path / "test.words.json").resolve(),
+        ]
+        assert result["file"] == audio
+        assert result["success"] is True
+        assert result["skipped"] is False
+        assert result["status"] == "succeeded"
+        assert result["outputs"] == expected_outputs
+        assert result["error"] is None
+        assert result["duration"] >= 0
+        for output in expected_outputs:
+            assert output.exists()
+
+    def test_backfills_stale_words_json_without_engine_call(self, tmp_path):
+        audio = tmp_path / "done.mp3"
+        audio.touch()
+        (tmp_path / "done.srt").write_text("existing", encoding="utf-8")
+        (tmp_path / "done.txt").write_text("[00:00:01] I am safe. Safe brain.", encoding="utf-8")
+        (tmp_path / "done.words.json").write_text(
+            json.dumps({
+                "version": 1,
+                "normalization": {"token_pattern": "[a-z]+"},
+                "words": [{"word": "i", "count": 1}],
+            }),
+            encoding="utf-8",
+        )
+
+        class CountingEngine(TranscribeEngine):
+            def __init__(self):
+                self.calls = 0
+
+            def transcribe(self, audio_path, language=None):
+                self.calls += 1
+                return [Segment(0.0, 1.0, "new")]
+
+        engine = CountingEngine()
+
+        from casts_down.transcribe import transcribe_one
+
+        result = transcribe_one(audio, engine=engine, skip_transcribed=True)
+
+        payload = json.loads((tmp_path / "done.words.json").read_text(encoding="utf-8"))
+        assert result["success"] is True
+        assert result["skipped"] is True
+        assert result["status"] == "backfilled"
+        assert result["outputs"] == [
+            (tmp_path / "done.srt").resolve(),
+            (tmp_path / "done.txt").resolve(),
+            (tmp_path / "done.words.json").resolve(),
+        ]
+        assert engine.calls == 0
+        assert payload["words"] == [
+            {"word": "safe", "count": 2},
+            {"word": "brain", "count": 1},
+        ]
+
 class TestCollectAudioFiles:
     def test_finds_mp3_and_m4a(self, tmp_path):
         (tmp_path / "a.mp3").touch()

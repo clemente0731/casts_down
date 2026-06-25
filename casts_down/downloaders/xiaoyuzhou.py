@@ -13,6 +13,50 @@ from tqdm import tqdm
 from casts_down.downloaders.naming import build_media_filename, dedupe_filename
 
 
+def _warn_on_file_done_failure(path: Path, error: Exception, use_tqdm: bool) -> None:
+    warning = f"[!] on_file_done failed for {path.name}: {type(error).__name__}: {error}"
+    if use_tqdm:
+        tqdm.write(warning)
+    else:
+        click.echo(warning, err=True)
+
+
+def _call_on_file_done(
+    callback: Callable[[Path, dict, str], None] | None,
+    path: Path,
+    episode: dict,
+    message: str,
+    use_tqdm: bool,
+) -> None:
+    if not callback:
+        return
+
+    try:
+        callback(path, episode, message)
+    except Exception as e:
+        _warn_on_file_done_failure(path, e, use_tqdm)
+
+
+def _call_on_file_failed(
+    callback: Callable[[Path, dict, str], None] | None,
+    path: Path,
+    episode: dict,
+    message: str,
+    use_tqdm: bool,
+) -> None:
+    if not callback:
+        return
+
+    try:
+        callback(path, episode, message)
+    except Exception as e:
+        warning = f"[!] on_file_failed failed for {path.name}: {type(e).__name__}: {e}"
+        if use_tqdm:
+            tqdm.write(warning)
+        else:
+            click.echo(warning, err=True)
+
+
 class XiaoyuzhouDownloader:
     """小宇宙下载器"""
 
@@ -171,7 +215,9 @@ class XiaoyuzhouDownloader:
         self,
         episode_url: str,
         output_dir: Path,
-        skip_existing: bool = False
+        skip_existing: bool = False,
+        on_file_done: Callable[[Path, dict, str], None] | None = None,
+        on_file_failed: Callable[[Path, dict, str], None] | None = None,
     ) -> list[Path]:
         """下载单个剧集（通过 URL），返回已下载文件路径列表"""
         downloaded_files: list[Path] = []
@@ -223,8 +269,22 @@ class XiaoyuzhouDownloader:
             if success:
                 click.echo(f"[+] {message}")
                 downloaded_files.append(output_path)
+                _call_on_file_done(
+                    on_file_done,
+                    output_path,
+                    episode_info,
+                    message,
+                    use_tqdm=False,
+                )
             else:
                 click.echo(f"[-] {message}", err=True)
+                _call_on_file_failed(
+                    on_file_failed,
+                    output_path,
+                    episode_info,
+                    message,
+                    use_tqdm=False,
+                )
                 raise RuntimeError(message)
 
         return downloaded_files
@@ -234,7 +294,9 @@ class XiaoyuzhouDownloader:
         podcast_url: str,
         output_dir: Path,
         skip_existing: bool = False,
-        latest: int | None = None
+        latest: int | None = None,
+        on_file_done: Callable[[Path, dict, str], None] | None = None,
+        on_file_failed: Callable[[Path, dict, str], None] | None = None,
     ) -> list[Path]:
         """批量下载播客剧集，返回已下载文件路径列表"""
         downloaded_files: list[Path] = []
@@ -278,6 +340,23 @@ class XiaoyuzhouDownloader:
                     session, audio_url, path, skip_existing,
                     progress_callback=_report_byte_progress,
                 )
+                success, message = result
+                if success:
+                    _call_on_file_done(
+                        on_file_done,
+                        path,
+                        episodes[idx],
+                        message,
+                        use_tqdm=True,
+                    )
+                else:
+                    _call_on_file_failed(
+                        on_file_failed,
+                        path,
+                        episodes[idx],
+                        message,
+                        use_tqdm=True,
+                    )
                 return idx, result
 
             try:
@@ -308,7 +387,8 @@ class XiaoyuzhouDownloader:
                         success, message = result
                         if success:
                             tqdm.write(f"[+] {message}")
-                            downloaded_files.append(path_map[idx])
+                            output_path = path_map[idx]
+                            downloaded_files.append(output_path)
                         else:
                             tqdm.write(f"[-] {message}")
             finally:
